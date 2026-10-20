@@ -8,10 +8,13 @@ from starlette.responses import JSONResponse
 from app.core.db import UNAVAILABLE_ERRORS
 from app.domain.errors import (
     AccountLocked,
+    FaceRejected,
     InvalidCredentials,
     InvalidState,
+    NoUsableFace,
     OAuthError,
     PolicyViolation,
+    PreAuthInvalid,
     PrincipalNotFound,
     RefreshTokenInvalid,
     RefreshTokenReused,
@@ -42,6 +45,39 @@ def install_domain_handlers(app: FastAPI) -> None:
             title="Account locked",
             detail="Too many failed attempts; try again later",
             headers={**NO_STORE, "Retry-After": str(exc.retry_after_seconds)},
+        )
+
+    @app.exception_handler(FaceRejected)
+    async def _face_rejected(request: Request, exc: FaceRejected) -> JSONResponse:
+        # Retry-After pilote le compte à rebours de l'UI (30 s puis 5 min au 2e échec).
+        return problem_response(
+            instance=request.url.path,
+            status=429 if exc.locked else 401,
+            code="FACE_LOCKED" if exc.locked else "FACE_NOT_RECOGNIZED",
+            title="Face verification failed",
+            detail="Too many failed attempts; try again later" if exc.locked else "Face not recognized for this username",
+            headers={**NO_STORE, "Retry-After": str(exc.retry_after_seconds)},
+        )
+
+    @app.exception_handler(NoUsableFace)
+    async def _no_face(request: Request, _: NoUsableFace) -> JSONResponse:
+        return problem_response(
+            instance=request.url.path,
+            status=422,
+            code="FACE_NOT_DETECTED",
+            title="Unusable capture",
+            detail="Exactly one face must be visible in the capture",
+        )
+
+    @app.exception_handler(PreAuthInvalid)
+    async def _pre_auth(request: Request, _: PreAuthInvalid) -> JSONResponse:
+        return problem_response(
+            instance=request.url.path,
+            status=401,
+            code="PRE_AUTH_INVALID",
+            title="Authentication required",
+            detail="The face verification step is missing, expired or already used",
+            headers=NO_STORE,
         )
 
     @app.exception_handler(RefreshTokenInvalid)

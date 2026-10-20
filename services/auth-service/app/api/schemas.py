@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+import base64
+
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from app.domain.models import Principal
 
@@ -20,6 +22,31 @@ class StrictModel(BaseModel):
 # --- entrées ---------------------------------------------------------------------
 class LoginRequest(StrictModel):
     username: str = Field(min_length=3, max_length=64)
+    password: SecretStr = Field(min_length=1, max_length=256)
+
+
+MAX_IMAGE_BASE64 = 1_000_000  # ≈ 730 Ko de JPEG ; une capture 640x480 en fait ~60
+
+
+class FaceImage(StrictModel):
+    """Capture webcam en base64 (sans préfixe data:)."""
+
+    image: bytes
+
+    @field_validator("image", mode="before")
+    @classmethod
+    def _decode(cls, value: object) -> bytes:
+        if not isinstance(value, str) or not 0 < len(value) <= MAX_IMAGE_BASE64:
+            raise ValueError("base64-encoded JPEG expected")
+        return base64.b64decode(value, validate=True)
+
+
+class FaceLoginRequest(FaceImage):
+    username: str = Field(min_length=3, max_length=64)
+
+
+class PasswordStepRequest(StrictModel):
+    pre_auth_token: str = Field(min_length=32, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     password: SecretStr = Field(min_length=1, max_length=256)
 
 
@@ -61,6 +88,11 @@ class TokenResponse(BaseModel):
     token_type: Literal["Bearer"] = "Bearer"
     expires_in: int
     principal: PrincipalView
+
+
+class PreAuthResponse(BaseModel):
+    pre_auth_token: str
+    expires_in: int
 
 
 class MeResponse(PrincipalView):
@@ -113,15 +145,19 @@ class PrincipalAdminView(PrincipalView):
     locked_until: datetime | None
     last_login_at: datetime | None
     created_at: datetime
+    face_enrolled: bool
+    face_blocked_seconds: int
 
     @classmethod
-    def of(cls, principal: Principal) -> PrincipalAdminView:
+    def of(cls, principal: Principal, face_blocked_seconds: int = 0) -> PrincipalAdminView:
         return cls(
             **PrincipalView.of(principal).model_dump(),
             is_active=principal.is_active,
             locked_until=principal.locked_until,
             last_login_at=principal.last_login_at,
             created_at=principal.created_at,
+            face_enrolled=principal.face_enrolled,
+            face_blocked_seconds=face_blocked_seconds,
         )
 
 

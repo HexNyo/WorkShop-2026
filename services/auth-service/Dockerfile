@@ -23,6 +23,9 @@ RUN pip install --require-virtualenv -r /build/requirements.txt
 COPY libs/python/ra_common /build/ra_common
 RUN pip install --require-virtualenv --no-deps /build/ra_common \
  && pip check
+# Modèles OpenCV Zoo intégrés à l'image : le conteneur est en lecture seule et sans accès Internet utile.
+ADD --chmod=0444 https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx /opt/models/
+ADD --chmod=0444 https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx /opt/models/
 
 # ------------------------------------------------------------------------ test
 FROM builder AS test
@@ -41,6 +44,9 @@ LABEL org.opencontainers.image.title="resilience-alpha-auth-service" \
       org.opencontainers.image.description="Authentification, RBAC et cycle de vie des jetons" \
       org.opencontainers.image.version="1.0.0"
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/models /srv/models
+# Borne le décodage d'image (anti « bombe JPEG ») : 4 Mpx suffisent largement pour une webcam.
+ENV OPENCV_IO_MAX_IMAGE_PIXELS=4194304
 RUN groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin app \
  && rm -rf /usr/local/lib/python3.12/site-packages/pip* /usr/local/bin/pip* /opt/venv/lib/python3.12/site-packages/pip* /opt/venv/bin/pip*

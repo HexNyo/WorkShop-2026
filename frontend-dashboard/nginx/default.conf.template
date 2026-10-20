@@ -54,9 +54,22 @@ server {
     }
 
     # ------------------------------------------------------------ auth-service
+    # Mot de passe seul fermé au public : visage (verify-face) puis mot de passe (verify-password).
     location = /api/auth/v1/auth/login {
+        types { }
+        default_type application/problem+json;
+        return 404 '{"type":"https://errors.resilience-alpha.local/not-found","title":"Resource not found","status":404,"code":"NOT_FOUND"}';
+    }
+    location ~ ^/api/auth/v1/auth/verify-(face|password)$ {
         limit_req zone=ra_login burst=20 nodelay;
         limit_req_status 429;
+        client_max_body_size 1m;  # capture webcam JPEG en base64
+        rewrite ^/api/auth/(v1/.*)$ /$1 break;
+        proxy_pass $auth_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+    location ~ "^/api/auth/v1/admin/principals/[0-9a-f-]{36}/face$" {
+        client_max_body_size 1m;
         rewrite ^/api/auth/(v1/.*)$ /$1 break;
         proxy_pass $auth_upstream;
         include /etc/nginx/snippets/proxy.conf;

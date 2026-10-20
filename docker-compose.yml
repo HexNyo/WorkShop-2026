@@ -97,6 +97,8 @@ services:
       AUTH_ACCESS_TOKEN_TTL_SECONDS: ${AUTH_ACCESS_TOKEN_TTL_SECONDS:-300}
       AUTH_REFRESH_TOKEN_TTL_SECONDS: ${AUTH_REFRESH_TOKEN_TTL_SECONDS:-28800}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+      AUTH_ESP8266_URL: ${AUTH_ESP8266_URL:-}
+      AUTH_FACE_MATCH_THRESHOLD: ${AUTH_FACE_MATCH_THRESHOLD:-0.363}
       # Seule la passerelle (réseau app) relaie des en-têtes X-Forwarded-*.
       FORWARDED_ALLOW_IPS: ${AUTH_FORWARDED_ALLOW_IPS:-172.30.10.0/24}
     tmpfs:
@@ -105,6 +107,7 @@ services:
       app:
         ipv4_address: 172.30.10.20
       data: {}
+      iot: {}
     deploy:
       resources:
         limits:
@@ -492,6 +495,8 @@ networks:
   llm:
     internal: true
   llm-egress: {}
+  # Sortie NAT vers le hotspot Windows (192.168.137.0/24) où vit l'ESP8266 ; auth-service uniquement.
+  iot: {}
 
 volumes:
   pgdata:

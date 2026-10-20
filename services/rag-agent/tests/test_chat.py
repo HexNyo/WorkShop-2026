@@ -52,7 +52,31 @@ def test_chat_maps_ollama_outage_to_503(tmp_path):
     assert client.post("/v1/chat", json={"message": "SYNTHETIC_ONLY"}).status_code == 503
 
 
-def test_chat_without_match_skips_model(tmp_path):
-    client = TestClient(create_app(kb(tmp_path), httpx.MockTransport(lambda r: httpx.Response(500))))
-    reply = client.post("/v1/chat", json={"message": "zzzz"}).json()
-    assert reply["sources"] == [] and "aucun passage" in reply["answer"]
+def test_chat_without_match_answers_with_live_status(tmp_path):
+    seen = {}
+
+    def stack(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health/readiness":
+            if request.url.host == "payment-api":
+                return httpx.Response(503, json={"status": "fail", "checks": {"postgres:connectivity": [{"status": "fail"}]}})
+            return httpx.Response(200, json={"status": "pass", "checks": {}})
+        seen["body"] = request.read().decode()
+        return httpx.Response(200, json={"message": {"content": "payment-api est en échec."}})
+
+    client = TestClient(create_app(kb(tmp_path), httpx.MockTransport(stack)))
+    reply = client.post("/v1/chat", json={"message": "je souhaite le status"}).json()
+    assert reply["sources"] == [] and reply["answer"] == "payment-api est en échec."
+    assert "payment-api : fail (en échec : postgres:connectivity)" in seen["body"]
+    assert "auth-service : pass" in seen["body"] and "aucun extrait pertinent" in seen["body"]
+
+
+def test_chat_flags_commands_missing_from_docs(tmp_path):
+    def ollama(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": "```sh\nra-ctl restart auth-service\n```"}})
+
+    client = TestClient(create_app(kb(tmp_path), httpx.MockTransport(ollama)))
+    assert "⚠" in client.post("/v1/chat", json={"message": "SYNTHETIC_ONLY ?"}).json()["answer"]
+
+
+def test_search_drops_hits_on_generic_words_only(tmp_path):
+    assert search(load_sections(kb(tmp_path)), "conteneur xyzt abcd efgh") == []

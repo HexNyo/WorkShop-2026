@@ -13,7 +13,8 @@ _SELECT = """
 SELECT p.id, p.kind::text AS kind, p.username, p.display_name, p.secret_hash, p.is_active,
        p.failed_login_count, p.locked_until, p.tokens_valid_after, p.last_login_at, p.created_at,
        COALESCE(array_agg(pr.role_code ORDER BY pr.role_code) FILTER (WHERE pr.role_code IS NOT NULL), '{}') AS roles,
-       COALESCE(bool_or(r.is_privileged), false) AS is_privileged
+       COALESCE(bool_or(r.is_privileged), false) AS is_privileged,
+       EXISTS (SELECT 1 FROM auth.face_embeddings f WHERE f.principal_id = p.id) AS face_enrolled
   FROM auth.principals p
   LEFT JOIN auth.principal_roles pr ON pr.principal_id = p.id
   LEFT JOIN auth.roles r ON r.code = pr.role_code
@@ -42,6 +43,7 @@ def _to_principal(row: asyncpg.Record) -> Principal:
         created_at=_aware(row["created_at"]),
         roles=tuple(row["roles"]),
         is_privileged=row["is_privileged"],
+        face_enrolled=row["face_enrolled"],
     )
 
 

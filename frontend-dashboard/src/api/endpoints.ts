@@ -24,8 +24,15 @@ const ASSISTANT = "/api/assistant/v1";
 
 // --------------------------------------------------------------------- auth
 export const authApi = {
-  login: (username: string, password: string) =>
-    api<TokenResponse>(`${AUTH}/auth/login`, { method: "POST", body: { username, password }, auth: false }),
+  // Mot de passe seul fermé par la passerelle : visage d'abord (jeton de pré-auth), puis mot de passe.
+  verifyFace: (username: string, image: string) =>
+    api<{ pre_auth_token: string; expires_in: number }>(`${AUTH}/auth/verify-face`, {
+      method: "POST",
+      body: { username, image },
+      auth: false,
+    }),
+  verifyPassword: (pre_auth_token: string, password: string) =>
+    api<TokenResponse>(`${AUTH}/auth/verify-password`, { method: "POST", body: { pre_auth_token, password }, auth: false }),
   refresh: () =>
     api<TokenResponse>(`${AUTH}/auth/refresh`, {
       method: "POST",

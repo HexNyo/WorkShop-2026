@@ -35,6 +35,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             await container.maintenance.stop()
+            await container.led.close()
             await container.db.close()
             log_event(logger, logging.INFO, "service.stopped", "auth-service stopped")
 

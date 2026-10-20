@@ -17,7 +17,8 @@ interface Session {
 interface AuthState {
   status: "restoring" | "anonymous" | "authenticated";
   principal: Principal | null;
-  login(username: string, password: string): Promise<void>;
+  /** `image` : capture webcam JPEG en base64 (sans préfixe data:). */
+  login(username: string, password: string, image: string): Promise<void>;
   logout(): Promise<void>;
   hasRole(...roles: string[]): boolean;
   /** Jeton courant (flux SSE : échange contre un ticket). */
@@ -79,8 +80,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [session, refresh]);
 
   const login = useCallback(
-    async (username: string, password: string) => {
-      const { data } = await authApi.login(username, password);
+    async (username: string, password: string, image: string) => {
+      const { data: preAuth } = await authApi.verifyFace(username, image);
+      const { data } = await authApi.verifyPassword(preAuth.pre_auth_token, password);
       apply(data);
     },
     [apply],

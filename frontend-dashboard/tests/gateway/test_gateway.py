@@ -40,15 +40,10 @@ def gw():
 _tokens: dict[str, str] = {}
 
 
-def login(gw: httpx.Client, username: str) -> httpx.Response:
-    return gw.post("/api/auth/v1/auth/login", json={"username": username, "password": secret(username)})
-
-
 def bearer(gw: httpx.Client, username: str) -> dict[str, str]:
+    # Depuis le réseau edge, un jeton utilisateur exige désormais un visage enrôlé (verify-face).
     if username not in _tokens:
-        response = login(gw, username)
-        assert response.status_code == 200, response.text
-        _tokens[username] = response.json()["access_token"]
+        pytest.skip("password-only login is closed at the gateway; user tokens need face enrolment")
     return {"Authorization": f"Bearer {_tokens[username]}"}
 
 
@@ -110,7 +105,7 @@ def test_healthz(gw: httpx.Client) -> None:
     ],
 )
 def test_only_public_contracts_are_routed(gw: httpx.Client, path: str) -> None:
-    response = gw.get(path, headers=bearer(gw, "admin"))
+    response = gw.get(path)
     assert response.status_code == 404, f"{path} must not be routed (got {response.status_code})"
     assert response.headers["content-type"].startswith("application/problem+json")
 
@@ -121,21 +116,19 @@ def test_webhook_is_unreachable_through_the_gateway(gw: httpx.Client) -> None:
 
 
 def test_oversized_bodies_are_rejected(gw: httpx.Client) -> None:
-    response = gw.post("/api/auth/v1/auth/login", content=b"x" * 70_000, headers={"Content-Type": "application/json"})
+    response = gw.post("/api/auth/v1/auth/refresh", content=b"x" * 70_000, headers={"Content-Type": "application/json"})
     assert response.status_code == 413
+    face = gw.post("/api/auth/v1/auth/verify-face", content=b"x" * 1_100_000, headers={"Content-Type": "application/json"})
+    assert face.status_code == 413
 
 
 # --------------------------------------------------------------- parcours
-def test_login_cookie_and_refresh_through_gateway(gw: httpx.Client) -> None:
-    response = login(gw, "alice")
-    assert response.status_code == 200
-    cookie = next(h for h in response.headers.get_list("set-cookie") if h.startswith("ra_refresh="))
-    assert "Path=/api/auth/v1/auth" in cookie and "HttpOnly" in cookie and "SameSite=strict" in cookie.replace("Strict", "strict")
-    value = cookie.split(";", 1)[0].split("=", 1)[1]
-    refreshed = gw.post(
-        "/api/auth/v1/auth/refresh", headers={"Cookie": f"ra_refresh={value}", "X-Requested-With": "ra-dashboard"}
-    )
-    assert refreshed.status_code == 200 and refreshed.json()["principal"]["username"] == "alice"
+def test_password_only_login_is_closed_but_two_step_login_is_routed(gw: httpx.Client) -> None:
+    closed = gw.post("/api/auth/v1/auth/login", json={"username": "alice", "password": secret("alice")})
+    assert closed.status_code == 404 and closed.headers["content-type"].startswith("application/problem+json")
+    step2 = gw.post("/api/auth/v1/auth/verify-password", json={"pre_auth_token": "x" * 43, "password": "whatever"})
+    assert step2.status_code == 401 and step2.json()["code"] == "PRE_AUTH_INVALID"
+    assert "camera=(self)" in gw.get("/").headers["permissions-policy"]
 
 
 def test_api_calls_are_proxied_with_request_ids(gw: httpx.Client) -> None:
@@ -177,7 +170,7 @@ def test_lab_route_follows_the_flag(gw: httpx.Client) -> None:
 
 def test_zz_login_is_rate_limited(gw: httpx.Client) -> None:
     statuses = [
-        gw.post("/api/auth/v1/auth/login", json={"username": "nobody-at-all", "password": "wrong-password"}).status_code
+        gw.post("/api/auth/v1/auth/verify-password", json={"pre_auth_token": "x" * 43, "password": "wrong"}).status_code
         for _ in range(40)
     ]
     assert 429 in statuses and set(statuses) <= {401, 429}

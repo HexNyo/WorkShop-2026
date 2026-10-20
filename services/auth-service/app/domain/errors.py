@@ -17,6 +17,23 @@ class AccountLocked(DomainError):
         self.retry_after_seconds = max(retry_after_seconds, 1)
 
 
+class FaceRejected(DomainError):
+    """Visage non reconnu (ou compte inéligible), ou identifiant temporairement bloqué."""
+
+    def __init__(self, retry_after_seconds: int, *, locked: bool) -> None:
+        super().__init__("face not recognized")
+        self.retry_after_seconds = max(retry_after_seconds, 1)
+        self.locked = locked
+
+
+class NoUsableFace(DomainError):
+    pass
+
+
+class PreAuthInvalid(DomainError):
+    pass
+
+
 class RefreshTokenInvalid(DomainError):
     pass
 

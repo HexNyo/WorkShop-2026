@@ -28,6 +28,7 @@ class Principal:
     created_at: datetime
     roles: tuple[str, ...]
     is_privileged: bool
+    face_enrolled: bool = False
 
     @property
     def has_secret(self) -> bool:

@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     lockout_seconds: int = Field(900, ge=60, le=86400)
     password_hash_concurrency: int = Field(4, ge=1, le=32)
 
+    # --- étape faciale + LED ESP8266 ---------------------------------------------------
+    # Seuil cosinus SFace (référence OpenCV 0.363) : à recalibrer selon la webcam et l'éclairage.
+    face_match_threshold: float = Field(0.363, ge=0.0, le=1.0)
+    # ex. http://192.168.137.50 ; vide = LED désactivée
+    esp8266_url: str = Field("", pattern=r"^(https?://[A-Za-z0-9.:-]+)?$")
+
     # --- maintenance -----------------------------------------------------------------------
     maintenance_interval_seconds: int = Field(600, ge=30, le=86400)
 

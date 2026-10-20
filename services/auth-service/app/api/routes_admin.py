@@ -9,7 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from starlette.responses import JSONResponse
 
 from app.api.deps import get_container
-from app.api.schemas import ContainmentRequest, PrincipalAdminView, PrincipalPage
+from app.api.schemas import ContainmentRequest, FaceImage, PrincipalAdminView, PrincipalPage
 from app.container import Container
 from app.domain.policies import ROLE_AUTH_ADMIN
 from ra_common.security import AccessTokenClaims, require_roles
@@ -25,7 +25,20 @@ async def list_principals(
     _: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
 ) -> PrincipalPage:
     items, next_cursor = await container.principals.list_page(after_username=cursor, limit=limit)
-    return PrincipalPage(items=[PrincipalAdminView.of(item) for item in items], next_cursor=next_cursor)
+    return PrincipalPage(
+        items=[PrincipalAdminView.of(item, container.face_login.blocked_seconds(item.username)) for item in items],
+        next_cursor=next_cursor,
+    )
+
+
+@router.put("/principals/{principal_id}/face", response_model=PrincipalAdminView, summary="Enrôler ou remplacer le visage")
+async def enroll_face(
+    principal_id: UUID,
+    body: FaceImage,
+    container: Container = Depends(get_container),
+    claims: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
+) -> PrincipalAdminView:
+    return PrincipalAdminView.of(await container.face_login.enroll(claims.sub, principal_id, body.image))
 
 
 ROLE_PATH = Path(pattern=r"^[a-z]+(\.[a-z_]+)+$", max_length=64)
@@ -60,7 +73,10 @@ async def principal_action(
     claims: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
 ) -> JSONResponse:
     if action == "enable":
-        return JSONResponse(PrincipalAdminView.of(await container.principals.enable(claims, principal_id, reason=body.reason)).model_dump(mode="json"))
+        # Déblocage manuel : lève aussi le blocage de l'étape faciale.
+        principal = await container.principals.enable(claims, principal_id, reason=body.reason)
+        container.face_login.unlock(principal.username)
+        return JSONResponse(PrincipalAdminView.of(principal).model_dump(mode="json"))
     result = await container.principals.contain(
         claims, principal_id, disable=action == "disable", reason=body.reason, incident_id=body.incident_id
     )

@@ -1,0 +1,12 @@
+{
+  "name": "resilience-alpha-ui-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Tests d'interface de bout en bout (Chromium headless) contre la plateforme complète",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}

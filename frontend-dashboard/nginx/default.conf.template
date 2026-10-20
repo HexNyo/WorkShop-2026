@@ -1,0 +1,176 @@
+# =============================================================================
+# PROJECT RESILIENCE-ALPHA — passerelle publique (seul point d'entrée exposé)
+# -----------------------------------------------------------------------------
+# * SPA React (fichiers statiques) ;
+# * reverse-proxy en LISTE BLANCHE : seuls les préfixes /api/<service>/v1/ des
+#   contrats publics sont routés ; /internal, /admin, /health, /metrics et le
+#   listener CONTROL du moteur ne le sont jamais (tout le reste -> 404) ;
+# * l'assistant (RAG, autre lot) est protégé par une sous-requête auth_request.
+# Rendu par envsubst au démarrage (variables ${...} ci-dessous uniquement).
+# =============================================================================
+
+log_format ra_json escape=json
+  '{"ts":"$time_iso8601","level":"INFO","service":"frontend-dashboard","event":"http.request",'
+  '"request_id":"$request_id","http":{"method":"$request_method","path":"$uri","status":$status,'
+  '"duration_s":$request_time,"upstream_s":"$upstream_response_time","bytes":$body_bytes_sent},'
+  '"client":"$remote_addr","user_agent":"$http_user_agent"}';
+
+limit_req_zone $binary_remote_addr zone=ra_login:10m rate=30r/m;
+limit_req_zone $binary_remote_addr zone=ra_assistant:10m rate=20r/m;
+
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+    access_log /dev/stdout ra_json;
+    error_log /dev/stderr warn;
+
+    root /usr/share/nginx/html;
+    client_max_body_size 64k;
+    client_body_timeout 10s;
+    client_header_timeout 10s;
+
+    # Résolution DNS à la requête : la passerelle démarre même si un amont est absent.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    resolver_timeout 2s;
+
+    proxy_connect_timeout 3s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+
+    set $auth_upstream "http://${AUTH_UPSTREAM}";
+    set $payment_upstream "http://${PAYMENT_UPSTREAM}";
+    set $supervision_upstream "http://${SUPERVISION_UPSTREAM}";
+    set $assistant_upstream "${ASSISTANT_UPSTREAM_URL}";
+
+    include /etc/nginx/snippets/security-headers.conf;
+
+    error_page 502 503 504 = @upstream_unavailable;
+
+    location = /healthz {
+        access_log off;
+        default_type application/health+json;
+        return 200 '{"status":"pass","service":"frontend-dashboard"}';
+    }
+
+    # ------------------------------------------------------------ auth-service
+    location = /api/auth/v1/auth/login {
+        limit_req zone=ra_login burst=20 nodelay;
+        limit_req_status 429;
+        rewrite ^/api/auth/(v1/.*)$ /$1 break;
+        proxy_pass $auth_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+    location /api/auth/v1/ {
+        rewrite ^/api/auth/(v1/.*)$ /$1 break;
+        proxy_pass $auth_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+
+    # ------------------------------------------------------------- payment-api
+    location = /api/payment/v1/transactions/events {
+        rewrite ^/api/payment/(v1/.*)$ /$1 break;
+        proxy_pass $payment_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        include /etc/nginx/snippets/sse.conf;
+    }
+    location /api/payment/v1/ {
+        rewrite ^/api/payment/(v1/.*)$ /$1 break;
+        proxy_pass $payment_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+    # Laboratoire de pannes : route générée au démarrage uniquement si CHAOS_LAB_ENABLED=true.
+    include /etc/nginx/lab/*.conf;
+
+    # ---------------------------------------- remediation-engine (SUPERVISION)
+    location = /api/supervision/v1/stream {
+        rewrite ^/api/supervision/(v1/.*)$ /$1 break;
+        proxy_pass $supervision_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        include /etc/nginx/snippets/sse.conf;
+    }
+    location /api/supervision/v1/ {
+        rewrite ^/api/supervision/(v1/.*)$ /$1 break;
+        proxy_pass $supervision_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+
+    # ------------------------------------------------------- assistant (RAG)
+    location /api/assistant/v1/ {
+        limit_req zone=ra_assistant burst=10 nodelay;
+        limit_req_status 429;
+        auth_request /_authz/assistant;
+        auth_request_set $auth_sub $upstream_http_x_auth_sub;
+        auth_request_set $auth_roles $upstream_http_x_auth_roles;
+        error_page 401 = @unauthenticated;
+        error_page 403 = @forbidden;
+        error_page 502 503 504 = @assistant_unavailable;
+
+        rewrite ^/api/assistant/(v1/.*)$ /$1 break;
+        proxy_pass $assistant_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        # Le jeton de l'utilisateur n'est jamais transmis au service tiers : seule
+        # l'identité vérifiée par auth-service l'est.
+        proxy_set_header Authorization "";
+        proxy_set_header Cookie "";
+        proxy_set_header X-Auth-Sub $auth_sub;
+        proxy_set_header X-Auth-Roles $auth_roles;
+        proxy_buffering off;
+        proxy_read_timeout 60s;
+    }
+    location = /_authz/assistant {
+        internal;
+        proxy_pass $auth_upstream/internal/v1/authz/check?role=noc.viewer;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 3s;
+    }
+
+    # ------------------------------------------------------- tout le reste /api
+    location /api/ {
+        types { }  # pas de type déduit de l'extension (ex. /api/x.json)
+        default_type application/problem+json;
+        return 404 '{"type":"https://errors.resilience-alpha.local/not-found","title":"Resource not found","status":404,"code":"NOT_FOUND"}';
+    }
+
+    location @upstream_unavailable {
+        types { }  # pas de type déduit de l'extension (ex. /api/x.json)
+        default_type application/problem+json;
+        add_header Retry-After 5 always;
+        include /etc/nginx/snippets/security-headers.conf;
+        return 503 '{"type":"https://errors.resilience-alpha.local/dependency-unavailable","title":"Service unavailable","status":503,"code":"DEPENDENCY_UNAVAILABLE","detail":"The upstream service is temporarily unreachable"}';
+    }
+    location @assistant_unavailable {
+        types { }  # pas de type déduit de l'extension (ex. /api/x.json)
+        default_type application/problem+json;
+        include /etc/nginx/snippets/security-headers.conf;
+        return 503 '{"type":"https://errors.resilience-alpha.local/assistant-unavailable","title":"Assistant unavailable","status":503,"code":"ASSISTANT_UNAVAILABLE","detail":"The documentary agent is not reachable"}';
+    }
+    location @unauthenticated {
+        types { }  # pas de type déduit de l'extension (ex. /api/x.json)
+        default_type application/problem+json;
+        include /etc/nginx/snippets/security-headers.conf;
+        return 401 '{"type":"https://errors.resilience-alpha.local/unauthenticated","title":"Authentication required","status":401,"code":"UNAUTHENTICATED"}';
+    }
+    location @forbidden {
+        types { }  # pas de type déduit de l'extension (ex. /api/x.json)
+        default_type application/problem+json;
+        include /etc/nginx/snippets/security-headers.conf;
+        return 403 '{"type":"https://errors.resilience-alpha.local/forbidden","title":"Forbidden","status":403,"code":"FORBIDDEN"}';
+    }
+
+    # ---------------------------------------------------------------- SPA
+    location /assets/ {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+    location / {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "no-store" always;
+        try_files $uri /index.html;
+    }
+}

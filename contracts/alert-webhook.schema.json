@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.resilience-alpha.local/alert-webhook/1.0.json",
+  "title": "RESILIENCE-ALPHA — Alerte émise par le moteur de détection",
+  "description": "Corps de POST /v1/alerts sur le listener CONTROL du remediation-engine. Requiert en plus un JWT svc.detector et l'en-tête X-RA-Signature (HMAC-SHA256 de '<t>.<corps brut>').",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source", "external_id", "detected_at", "category", "severity", "title", "target"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "source": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
+      "examples": ["ml-anomaly-detector", "siem"]
+    },
+    "external_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Identifiant unique côté émetteur ; (source, external_id) garantit l'idempotence."
+    },
+    "detected_at": { "type": "string", "format": "date-time" },
+    "category": {
+      "enum": [
+        "SERVICE_UNAVAILABLE",
+        "PERFORMANCE_DEGRADATION",
+        "RESOURCE_EXHAUSTION",
+        "DATA_INTEGRITY_VIOLATION",
+        "CREDENTIAL_COMPROMISE",
+        "ANOMALOUS_TRAFFIC",
+        "FRAUD_PATTERN"
+      ]
+    },
+    "severity": { "enum": ["INFO", "WARNING", "HIGH", "CRITICAL"] },
+    "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "title": { "type": "string", "minLength": 3, "maxLength": 200 },
+    "description": { "type": ["string", "null"], "maxLength": 2000 },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service"],
+      "properties": {
+        "service": { "enum": ["auth-service", "payment-api", "database", "remediation-engine", "frontend-dashboard"] },
+        "principal_id": { "type": ["string", "null"], "format": "uuid" },
+        "account_id": { "type": ["string", "null"], "format": "uuid" }
+      }
+    },
+    "fingerprint": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Clé de regroupement libre ; si nulle : sha256(category|service|principal_id|account_id)."
+    },
+    "evidence": {
+      "type": "object",
+      "description": "Éléments de preuve libres (métriques, fenêtres, scores). Taille totale du corps ≤ 64 Kio."
+    },
+    "labels": {
+      "type": "object",
+      "maxProperties": 32,
+      "additionalProperties": { "type": "string", "maxLength": 256 },
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,62}$" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "category": { "const": "CREDENTIAL_COMPROMISE" } } },
+      "then": { "properties": { "target": { "required": ["service", "principal_id"], "properties": { "principal_id": { "type": "string" } } } } }
+    },
+    {
+      "if": { "properties": { "category": { "const": "FRAUD_PATTERN" } } },
+      "then": { "properties": { "target": { "required": ["service", "account_id"], "properties": { "account_id": { "type": "string" } } } } }
+    }
+  ]
+}

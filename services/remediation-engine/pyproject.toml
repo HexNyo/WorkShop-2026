@@ -1,0 +1,14 @@
+[project]
+name = "remediation-engine"
+version = "1.0.0"
+description = "PROJECT RESILIENCE-ALPHA — moteur de remédiation autonome (Zero-Touch Recovery)"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"

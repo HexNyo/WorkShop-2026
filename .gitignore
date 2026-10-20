@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Divers
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Graphe local (contient des chemins de la machine)
+graphify-out/
+
+# Artefacts des tests d'interface (captures, traces)
+frontend-dashboard/e2e/artifacts/
+
+# Outils perso locaux
+.claude/
+CLAUDE.md
+.graphifyignore

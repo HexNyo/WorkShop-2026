@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.resilience-alpha.local/sse-events/1.0.json",
+  "title": "RESILIENCE-ALPHA — Événements du flux de supervision",
+  "description": "Champ data des événements SSE émis par GET /v1/stream (listener SUPERVISION). Le champ SSE 'event' est égal à 'type', le champ 'id' à 'seq'.",
+  "type": "object",
+  "required": ["type", "seq", "occurred_at", "payload"],
+  "properties": {
+    "type": { "type": "string" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "incident_id": { "type": ["string", "null"], "format": "uuid" },
+    "payload": { "type": "object" }
+  },
+  "$defs": {
+    "phase": { "enum": ["NOMINAL", "DEGRADED", "CRITICAL", "RECOVERING", "RESTORED"] },
+    "incidentStatus": { "enum": ["OPEN", "TRIAGED", "REMEDIATING", "VERIFYING", "RESOLVED", "ESCALATED", "SUPPRESSED"] },
+    "serviceStatus": { "enum": ["UP", "DEGRADED", "DOWN", "UNKNOWN"] },
+    "severity": { "enum": ["INFO", "WARNING", "HIGH", "CRITICAL"] },
+    "stepStatus": { "enum": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED"] }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": { "const": "system.phase_changed" },
+        "payload": {
+          "type": "object",
+          "required": ["phase", "previous", "reason"],
+          "properties": {
+            "phase": { "$ref": "#/$defs/phase" },
+            "previous": { "$ref": "#/$defs/phase" },
+            "reason": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "service.health" },
+        "payload": {
+          "type": "object",
+          "required": ["service", "status"],
+          "properties": {
+            "service": { "type": "string" },
+            "status": { "$ref": "#/$defs/serviceStatus" },
+            "latency_ms": { "type": ["integer", "null"], "minimum": 0 },
+            "detail": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "alert.received" },
+        "payload": {
+          "type": "object",
+          "required": ["alert_id", "source", "category", "severity", "title", "deduplicated"],
+          "properties": {
+            "alert_id": { "type": "string", "format": "uuid" },
+            "source": { "type": "string" },
+            "category": { "type": "string" },
+            "severity": { "$ref": "#/$defs/severity" },
+            "confidence": { "type": ["number", "null"] },
+            "title": { "type": "string" },
+            "deduplicated": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "incident.opened" },
+        "payload": {
+          "type": "object",
+          "required": ["title", "category", "severity", "target_service"],
+          "properties": {
+            "title": { "type": "string" },
+            "category": { "type": "string" },
+            "severity": { "$ref": "#/$defs/severity" },
+            "target_service": { "type": "string" },
+            "playbook_code": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "incident.status_changed" },
+        "payload": {
+          "type": "object",
+          "required": ["from", "to", "reason"],
+          "properties": {
+            "from": { "$ref": "#/$defs/incidentStatus" },
+            "to": { "$ref": "#/$defs/incidentStatus" },
+            "reason": { "type": "string" },
+            "attempt": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "remediation.step" },
+        "payload": {
+          "type": "object",
+          "required": ["execution_id", "phase", "seq", "action", "status"],
+          "properties": {
+            "execution_id": { "type": "string", "format": "uuid" },
+            "phase": { "enum": ["REMEDIATION", "POST_VERIFICATION"] },
+            "seq": { "type": "integer", "minimum": 1 },
+            "action": { "type": "string", "pattern": "^[a-z]+\\.[a-z_]+$" },
+            "target": { "type": ["string", "null"] },
+            "status": { "$ref": "#/$defs/stepStatus" },
+            "duration_ms": { "type": ["integer", "null"], "minimum": 0 },
+            "output": { "type": ["object", "null"] },
+            "error": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "verification.started" },
+        "payload": {
+          "type": "object",
+          "required": ["run_id", "trigger_source", "planned_checks"],
+          "properties": {
+            "run_id": { "type": "string", "format": "uuid" },
+            "trigger_source": { "enum": ["REMEDIATION", "MANUAL", "SCHEDULED"] },
+            "planned_checks": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "verification.check" },
+        "payload": {
+          "type": "object",
+          "required": ["run_id", "seq", "code", "passed"],
+          "properties": {
+            "run_id": { "type": "string", "format": "uuid" },
+            "seq": { "type": "integer", "minimum": 1 },
+            "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+            "passed": { "type": "boolean" },
+            "latency_ms": { "type": ["integer", "null"], "minimum": 0 },
+            "detail": { "type": "object" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "verification.completed" },
+        "payload": {
+          "type": "object",
+          "required": ["run_id", "status"],
+          "properties": {
+            "run_id": { "type": "string", "format": "uuid" },
+            "status": { "enum": ["PASSED", "FAILED"] },
+            "failed_check": { "type": ["string", "null"] },
+            "synthetic_transaction_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "incident.closed" },
+        "payload": {
+          "type": "object",
+          "required": ["status", "resolution"],
+          "properties": {
+            "status": { "enum": ["RESOLVED", "SUPPRESSED"] },
+            "resolution": { "enum": ["AUTOMATIC", "MANUAL", "SUPPRESSED"] },
+            "mttr_seconds": { "type": ["number", "null"], "minimum": 0 }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "stream.reset" },
+        "payload": {
+          "type": "object",
+          "properties": { "reason": { "type": "string" } }
+        }
+      }
+    }
+  ]
+}

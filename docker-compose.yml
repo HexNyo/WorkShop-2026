@@ -1,0 +1,498 @@
+# =============================================================================
+# PROJECT RESILIENCE-ALPHA — orchestration locale
+# -----------------------------------------------------------------------------
+# Prérequis : `./scripts/generate-dev-secrets.sh` (crée .env, ignoré par git).
+#   docker compose up -d --build                      # plateforme
+#   docker compose --profile test run --rm auth-tests # tests e2e auth-service
+# Lot 2 : database + auth-service. Les lots suivants complètent ce fichier.
+# =============================================================================
+name: resilience-alpha
+
+x-hardening: &hardening
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-auth-bootstrap: &auth-bootstrap
+  AUTH_BOOTSTRAP_ADMIN_SECRET: ${AUTH_BOOTSTRAP_ADMIN_SECRET:-}
+  AUTH_BOOTSTRAP_ALICE_SECRET: ${AUTH_BOOTSTRAP_ALICE_SECRET:-}
+  AUTH_BOOTSTRAP_BOB_SECRET: ${AUTH_BOOTSTRAP_BOB_SECRET:-}
+  AUTH_BOOTSTRAP_MERCHANT_SECRET: ${AUTH_BOOTSTRAP_MERCHANT_SECRET:-}
+  AUTH_BOOTSTRAP_NOC_OPERATOR_SECRET: ${AUTH_BOOTSTRAP_NOC_OPERATOR_SECRET:-}
+  AUTH_BOOTSTRAP_SVC_REMEDIATION_SECRET: ${AUTH_BOOTSTRAP_SVC_REMEDIATION_SECRET:-}
+  AUTH_BOOTSTRAP_SVC_SYNTHETIC_SECRET: ${AUTH_BOOTSTRAP_SVC_SYNTHETIC_SECRET:-}
+  AUTH_BOOTSTRAP_SVC_DETECTOR_SECRET: ${AUTH_BOOTSTRAP_SVC_DETECTOR_SECRET:-}
+  AUTH_BOOTSTRAP_SVC_PAYMENT_API_SECRET: ${AUTH_BOOTSTRAP_SVC_PAYMENT_API_SECRET:-}
+
+services:
+  # ---------------------------------------------------------------- database
+  postgres:
+    <<: *hardening
+    build:
+      context: ./database
+      target: runtime
+    image: resilience-alpha/database:1.0.0
+    command:
+      - postgres
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - log_line_prefix=%m [%p] %q%u@%d
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-resilience}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/generate-dev-secrets.sh}
+      RA_DB_AUTH_PASSWORD: ${RA_DB_AUTH_PASSWORD:?missing}
+      RA_DB_PAYMENT_PASSWORD: ${RA_DB_PAYMENT_PASSWORD:?missing}
+      RA_DB_PAYMENT_MAINT_PASSWORD: ${RA_DB_PAYMENT_MAINT_PASSWORD:?missing}
+      RA_DB_REMEDIATION_PASSWORD: ${RA_DB_REMEDIATION_PASSWORD:?missing}
+      CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    tmpfs:
+      - /var/run/postgresql:size=1m,uid=70,gid=70
+      - /tmp:size=64m,uid=70,gid=70
+    shm_size: 128m
+    networks:
+      data:
+        ipv4_address: 172.30.30.10
+
+  # ------------------------------------------------------------ auth-service
+  auth-service:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+      target: runtime
+    image: resilience-alpha/auth-service:1.0.0
+    labels:
+      resilience.service: auth-service
+      resilience.remediable: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *auth-bootstrap
+      AUTH_LOG_LEVEL: ${AUTH_LOG_LEVEL:-INFO}
+      AUTH_DB_HOST: postgres
+      AUTH_DB_NAME: ${POSTGRES_DB:-resilience}
+      AUTH_DB_USER: auth_app
+      AUTH_DB_PASSWORD: ${RA_DB_AUTH_PASSWORD:?missing}
+      AUTH_ISSUER: ${AUTH_ISSUER:?missing}
+      AUTH_JWT_PRIVATE_KEY_PEM_B64: ${AUTH_JWT_PRIVATE_KEY_PEM_B64:?missing}
+      AUTH_JWT_KEY_ID: ${AUTH_JWT_KEY_ID:?missing}
+      AUTH_JWT_PREVIOUS_PUBLIC_KEYS: ${AUTH_JWT_PREVIOUS_PUBLIC_KEYS:-}
+      AUTH_ACCESS_TOKEN_TTL_SECONDS: ${AUTH_ACCESS_TOKEN_TTL_SECONDS:-300}
+      AUTH_REFRESH_TOKEN_TTL_SECONDS: ${AUTH_REFRESH_TOKEN_TTL_SECONDS:-28800}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+      # Seule la passerelle (réseau app) relaie des en-têtes X-Forwarded-*.
+      FORWARDED_ALLOW_IPS: ${AUTH_FORWARDED_ALLOW_IPS:-172.30.10.0/24}
+    tmpfs:
+      - /tmp:size=16m
+    networks:
+      app:
+        ipv4_address: 172.30.10.20
+      data: {}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ------------------------------------------------------------- payment-api
+  payment-api:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: services/payment-api/Dockerfile
+      target: runtime
+    image: resilience-alpha/payment-api:1.0.0
+    labels:
+      resilience.service: payment-api
+      resilience.remediable: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    environment:
+      PAYMENT_LOG_LEVEL: ${PAYMENT_LOG_LEVEL:-INFO}
+      PAYMENT_DB_HOST: postgres
+      PAYMENT_DB_NAME: ${POSTGRES_DB:-resilience}
+      PAYMENT_DB_USER: payment_app
+      PAYMENT_DB_PASSWORD: ${RA_DB_PAYMENT_PASSWORD:?missing}
+      PAYMENT_DB_MAINT_USER: payment_maint
+      PAYMENT_DB_MAINT_PASSWORD: ${RA_DB_PAYMENT_MAINT_PASSWORD:?missing}
+      PAYMENT_DB_POOL_MAX_SIZE: ${PAYMENT_DB_POOL_MAX_SIZE:-10}
+      PAYMENT_AUTH_BASE_URL: http://auth-service:8000
+      PAYMENT_AUTH_ISSUER: ${AUTH_ISSUER:?missing}
+      PAYMENT_CLIENT_ID: svc-payment-api
+      PAYMENT_CLIENT_SECRET: ${AUTH_BOOTSTRAP_SVC_PAYMENT_API_SECRET:?missing}
+      PAYMENT_STREAM_TICKET_SECRET: ${PAYMENT_STREAM_TICKET_SECRET:?run scripts/generate-dev-secrets.sh --update}
+      PAYMENT_STALE_AFTER_SECONDS: ${PAYMENT_STALE_AFTER_SECONDS:-300}
+      PAYMENT_CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
+      PAYMENT_INTEGRITY_REFRESH_PER_MINUTE: ${PAYMENT_INTEGRITY_REFRESH_PER_MINUTE:-30}
+      FORWARDED_ALLOW_IPS: ${AUTH_FORWARDED_ALLOW_IPS:-172.30.10.0/24}
+    tmpfs:
+      - /tmp:size=16m
+    networks:
+      app:
+        ipv4_address: 172.30.10.30
+      data: {}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ------------------------------------------------- proxy Docker restreint
+  # Seul chemin vers le démon Docker. Allowlist stricte : ping, liste des
+  # conteneurs, redémarrage par identifiant. Utilisateur nobody, groupe du socket.
+  socket-proxy:
+    <<: *hardening
+    image: wollomatic/socket-proxy:1.10.0
+    user: "65534:0"
+    command:
+      - -loglevel=INFO
+      - -logjson
+      - -listenip=0.0.0.0
+      - -proxyport=2375
+      - -allowfrom=172.30.40.10/32
+      # Le proxy ancre lui-même chaque expression (^…$).
+      - -allowGET=/(v1\.[0-9]+/)?(_ping|containers/json)
+      - -allowPOST=/(v1\.[0-9]+/)?containers/[a-f0-9]{64}/restart
+      - -watchdoginterval=30
+      - -stoponwatchdog
+      - -shutdowngracetime=5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      docker-ctl:
+        ipv4_address: 172.30.40.20
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
+  # ---------------------------------------------------- remediation-engine
+  remediation-engine:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: services/remediation-engine/Dockerfile
+      target: runtime
+    image: resilience-alpha/remediation-engine:1.0.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      payment-api:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_started
+    environment:
+      REMEDIATION_LOG_LEVEL: ${REMEDIATION_LOG_LEVEL:-INFO}
+      REMEDIATION_CONTROL_BIND_HOST: 172.30.20.10
+      REMEDIATION_SUPERVISION_BIND_HOST: 172.30.10.10
+      REMEDIATION_DB_HOST: postgres
+      REMEDIATION_DB_NAME: ${POSTGRES_DB:-resilience}
+      REMEDIATION_DB_USER: remediation_app
+      REMEDIATION_DB_PASSWORD: ${RA_DB_REMEDIATION_PASSWORD:?missing}
+      REMEDIATION_AUTH_BASE_URL: http://auth-service:8000
+      REMEDIATION_AUTH_ISSUER: ${AUTH_ISSUER:?missing}
+      REMEDIATION_CLIENT_SECRET: ${AUTH_BOOTSTRAP_SVC_REMEDIATION_SECRET:?missing}
+      REMEDIATION_SYNTHETIC_CLIENT_SECRET: ${AUTH_BOOTSTRAP_SVC_SYNTHETIC_SECRET:?missing}
+      REMEDIATION_PAYMENT_BASE_URL: http://payment-api:8000
+      REMEDIATION_DOCKER_PROXY_URL: http://172.30.40.20:2375
+      REMEDIATION_WEBHOOK_HMAC_SECRET: ${REMEDIATION_WEBHOOK_HMAC_SECRET:?missing}
+      REMEDIATION_STREAM_TICKET_SECRET: ${REMEDIATION_STREAM_TICKET_SECRET:?run scripts/generate-dev-secrets.sh --update}
+      REMEDIATION_MIN_CONFIDENCE: ${REMEDIATION_MIN_CONFIDENCE:-0.60}
+      REMEDIATION_MAX_PER_TARGET_PER_HOUR: ${REMEDIATION_MAX_PER_TARGET_PER_HOUR:-5}
+      REMEDIATION_RESTORED_HOLD_SECONDS: ${REMEDIATION_RESTORED_HOLD_SECONDS:-300}
+      REMEDIATION_HEALTH_POLL_SECONDS: ${REMEDIATION_HEALTH_POLL_SECONDS:-5}
+      REMEDIATION_SCHEDULED_STM_SECONDS: ${REMEDIATION_SCHEDULED_STM_SECONDS:-60}
+      REMEDIATION_WATCHDOG_ENABLED: ${REMEDIATION_WATCHDOG_ENABLED:-true}
+      REMEDIATION_CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
+      REMEDIATION_MONITORED_SERVICES: auth-service=http://auth-service:8000/health/readiness,payment-api=http://payment-api:8000/health/readiness,frontend-dashboard=http://frontend-dashboard:8080/healthz
+      REMEDIATION_RESTARTABLE_SERVICES: auth-service,payment-api,frontend-dashboard
+    tmpfs:
+      - /tmp:size=16m
+    networks:
+      app:
+        ipv4_address: 172.30.10.10
+      control:
+        ipv4_address: 172.30.20.10
+      docker-ctl:
+        ipv4_address: 172.30.40.10
+      data: {}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ------------------------------------------------- portail + passerelle publique
+  # Seul service publié (sur 127.0.0.1 en local ; TLS terminé en amont en production).
+  frontend-dashboard:
+    <<: *hardening
+    build:
+      context: ./frontend-dashboard
+      target: runtime
+    image: resilience-alpha/frontend-dashboard:1.0.0
+    labels:
+      resilience.service: frontend-dashboard
+      resilience.remediable: "true"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+    environment:
+      AUTH_UPSTREAM: auth-service:8000
+      PAYMENT_UPSTREAM: payment-api:8000
+      SUPERVISION_UPSTREAM: remediation-engine:8002
+      ASSISTANT_UPSTREAM_URL: ${ASSISTANT_UPSTREAM_URL:-http://rag-agent:8000}
+      CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
+    ports:
+      - "127.0.0.1:${FRONTEND_PUBLIC_PORT:-8088}:8080"
+    tmpfs:
+      - /tmp:size=32m,uid=101,gid=101
+      - /etc/nginx/conf.d:size=1m,uid=101,gid=101
+      - /etc/nginx/lab:size=1m,uid=101,gid=101
+    networks:
+      edge: {}
+      app:
+        ipv4_address: 172.30.10.50
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # ------------------------------------------------ assistant (LLM local, gratuit)
+  # Ollama sert le modèle sur le GPU NVIDIA ; seul réseau sortant : llm-egress (téléchargement du modèle).
+  # Au premier démarrage, télécharge le modèle (~4,7 Go, volume ollama-models) ; sain une fois le modèle présent.
+  ollama:
+    image: ollama/ollama:0.5.4
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 2; ollama pull \"$$RAG_MODEL\"; wait"]
+    environment:
+      RAG_MODEL: ${RAG_MODEL:-qwen2.5:7b}
+      OLLAMA_KEEP_ALIVE: 30m
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama show \"$$RAG_MODEL\" >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - llm
+      - llm-egress
+
+  rag-agent:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: services/rag-agent/Dockerfile
+      target: runtime
+    image: resilience-alpha/rag-agent:1.0.0
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      RAG_OLLAMA_URL: http://ollama:11434
+      RAG_MODEL: ${RAG_MODEL:-qwen2.5:7b}
+    tmpfs:
+      - /tmp:size=16m
+    networks:
+      - app
+      - llm
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # ------------------------------------------- simulateur de détecteur (outils)
+  detector-simulator:
+    profiles: ["tools"]
+    image: resilience-alpha/remediation-engine:1.0.0
+    entrypoint: ["python", "-m", "app.tools.simulate_alert"]
+    environment:
+      SIMULATOR_AUTH_URL: http://auth-service:8000
+      # Adresse explicite : sur le réseau app, le port CONTROL n'existe pas (segmentation).
+      SIMULATOR_ENGINE_URL: http://172.30.20.10:8001
+      SIMULATOR_CLIENT_SECRET: ${AUTH_BOOTSTRAP_SVC_DETECTOR_SECRET:?missing}
+      SIMULATOR_HMAC_SECRET: ${REMEDIATION_WEBHOOK_HMAC_SECRET:?missing}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - app
+      - control
+
+  # ------------------------------------------------------- tests (profil test)
+  auth-tests:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+      target: test
+    image: resilience-alpha/auth-service:test
+    depends_on:
+      auth-service:
+        condition: service_healthy
+    environment:
+      <<: *auth-bootstrap
+      AUTH_E2E_BASE_URL: http://auth-service:8000
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - app
+
+  payment-tests:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: services/payment-api/Dockerfile
+      target: test
+    image: resilience-alpha/payment-api:test
+    depends_on:
+      payment-api:
+        condition: service_healthy
+    environment:
+      <<: *auth-bootstrap
+      E2E_AUTH_URL: http://auth-service:8000
+      E2E_PAYMENT_URL: http://payment-api:8000
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - app
+
+  remediation-tests:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: services/remediation-engine/Dockerfile
+      target: test
+    image: resilience-alpha/remediation-engine:test
+    depends_on:
+      remediation-engine:
+        condition: service_healthy
+    environment:
+      <<: *auth-bootstrap
+      E2E_AUTH_URL: http://auth-service:8000
+      E2E_PAYMENT_URL: http://payment-api:8000
+      E2E_CONTROL_URL: http://172.30.20.10:8001
+      E2E_SUPERVISION_URL: http://remediation-engine:8002
+      E2E_WEBHOOK_HMAC_SECRET: ${REMEDIATION_WEBHOOK_HMAC_SECRET:?missing}
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - app
+      - control
+
+  gateway-tests:
+    profiles: ["test"]
+    image: resilience-alpha/auth-service:test
+    depends_on:
+      frontend-dashboard:
+        condition: service_healthy
+      remediation-engine:
+        condition: service_healthy
+    environment:
+      <<: *auth-bootstrap
+      GATEWAY_URL: http://frontend-dashboard:8080
+      CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
+    volumes:
+      - ./frontend-dashboard/tests/gateway:/srv/gateway_tests:ro
+    working_dir: /srv/gateway_tests
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "/srv/gateway_tests"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - edge
+
+  # Navigateur réel (Chromium headless) dans l'espace réseau de la passerelle :
+  # l'interface est servie sur http://localhost:8080 (contexte sécurisé -> cookies Secure).
+  ui-tests:
+    profiles: ["test"]
+    image: mcr.microsoft.com/playwright:v1.49.1-jammy
+    depends_on:
+      frontend-dashboard:
+        condition: service_healthy
+      remediation-engine:
+        condition: service_healthy
+    network_mode: "service:frontend-dashboard"
+    environment:
+      <<: *auth-bootstrap
+      UI_BASE_URL: http://localhost:8080
+      CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
+      npm_config_cache: /tmp/npm-cache
+      SHOTS_DIR: /e2e-out/screenshots
+    # Sources en lecture seule ; dépendances installées dans le conteneur ; seules les
+    # captures d'écran sont écrites sur l'hôte.
+    volumes:
+      - ./frontend-dashboard/e2e:/e2e-src:ro
+      - ./frontend-dashboard/e2e/artifacts:/e2e-out
+    working_dir: /tmp
+    command:
+      - sh
+      - -c
+      - mkdir -p /tmp/e2e && cd /e2e-src && cp package.json package-lock.json playwright.config.ts /tmp/e2e/ && cp -r tests /tmp/e2e/ && cd /tmp/e2e && npm ci --no-audit --no-fund && npx playwright test
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  app:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+  control:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24
+  docker-ctl:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.40.0/24
+  data:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.30.0/24
+  llm:
+    internal: true
+  llm-egress: {}
+
+volumes:
+  pgdata:
+  ollama-models:

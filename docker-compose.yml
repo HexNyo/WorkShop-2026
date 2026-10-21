@@ -156,7 +156,8 @@ services:
   socket-proxy:
     <<: *hardening
     image: wollomatic/socket-proxy:1.10.0
-    user: "65534:0"
+    # Groupe propriétaire de docker.sock : 0 sous Docker Desktop, celui du groupe « docker » sous Linux.
+    user: "65534:${DOCKER_GID:-0}"
     command:
       - -loglevel=INFO
       - -logjson
@@ -295,13 +296,7 @@ services:
       timeout: 5s
       retries: 6
       start_period: 30m
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # GPU NVIDIA optionnel : docker-compose.gpu.yml (sinon le modèle tourne sur CPU, plus lentement).
     networks:
       - llm
       - llm-egress

@@ -1,0 +1,11 @@
+# Active le GPU NVIDIA pour ollama. Ajouter dans .env :
+#   COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml   (Windows ; « : » comme séparateur sous Linux)
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,4 +1,4 @@
-"""Accès PostgreSQL de l'auth-service (pool asyncpg partagé via ra_common)."""
+"""Accès MariaDB de l'auth-service (pool aiomysql partagé via ra_common)."""
 
 from __future__ import annotations
 

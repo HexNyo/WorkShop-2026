@@ -8,9 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-import asyncpg
 from ra_common.context import correlation_id_var
-from ra_common.db import Database, sqlstate
+from ra_common.db import Connection, Database, DatabaseError, UniqueViolationError, sqlstate
 from ra_common.logging import log_event
 
 from app.domain.errors import (
@@ -127,7 +126,7 @@ class TransactionService:
                         is_synthetic=caller.is_synthetic,
                         correlation_id=correlation_id_var.get(),
                     )
-            except asyncpg.UniqueViolationError as exc:
+            except UniqueViolationError as exc:
                 if exc.constraint_name != "uq_transactions_idempotency":
                     raise
                 concurrent = await self._transactions.get_by_idempotency_key(conn, caller.id, cmd.idempotency_key)
@@ -149,7 +148,7 @@ class TransactionService:
         REPLAYS.inc()
         return CreateOutcome(transaction=existing, created=False)
 
-    async def _validate(self, conn: asyncpg.Connection, transaction_id: UUID, debit: Account, credit: Account) -> bool:
+    async def _validate(self, conn: Connection, transaction_id: UUID, debit: Account, credit: Account) -> bool:
         """Contrôles métier ; renvoie True si la transaction est VALIDATED (exécutable)."""
         if debit.status != "ACTIVE" or credit.status != "ACTIVE":
             await self._transactions.transition(
@@ -165,13 +164,13 @@ class TransactionService:
             conn, transaction_id, to_status=TransactionStatus.VALIDATED, from_statuses=(TransactionStatus.PENDING,)
         )
 
-    async def _execute(self, conn: asyncpg.Connection, transaction_id: UUID) -> None:
+    async def _execute(self, conn: Connection, transaction_id: UUID) -> None:
         """Exécution dans un savepoint : une divergence détectée en base (RA009) est
         historisée en FAILED au lieu d'annuler toute la demande."""
         try:
             async with conn.transaction():
                 await self._transactions.execute(conn, transaction_id)
-        except asyncpg.PostgresError as exc:
+        except DatabaseError as exc:
             if sqlstate(exc) != SQLSTATE_LEDGER_DIVERGENCE:
                 raise
             DIVERGENCE.inc()
@@ -222,7 +221,7 @@ class TransactionService:
                 raise InvalidState(f"Transaction is {transaction.status.value}; only VALIDATED transactions can be executed")
             try:
                 await self._execute(conn, transaction_id)
-            except asyncpg.PostgresError as exc:
+            except DatabaseError as exc:
                 if sqlstate(exc) == SQLSTATE_INVALID_STATE:
                     raise InvalidState("Transaction state changed concurrently") from exc
                 raise
@@ -245,7 +244,7 @@ class TransactionService:
         TRANSACTIONS.labels(status="CANCELLED", synthetic=str(transaction.is_synthetic).lower()).inc()
         return transaction
 
-    async def _owned(self, conn: asyncpg.Connection, caller: Caller, transaction_id: UUID) -> Transaction:
+    async def _owned(self, conn: Connection, caller: Caller, transaction_id: UUID) -> Transaction:
         transaction = await self._transactions.get(conn, transaction_id)
         if transaction is None or transaction.initiator_principal_id != caller.id:
             raise ResourceNotFound("Transaction not found")

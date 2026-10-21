@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
 # PROJECT RESILIENCE-ALPHA — tests d'acceptation de la base sur instance éphémère
-# Construit la cible `test` de database/Dockerfile, démarre une base jetable
+# Construit database/Dockerfile (MariaDB + scripts d'init), démarre une base jetable
 # (mots de passe aléatoires, laboratoire activé), exécute la suite puis détruit tout.
+# Ne touche jamais l'instance MariaDB externe.
 # =============================================================================
 set -euo pipefail
 # Git Bash (Windows) : empêche la réécriture des chemins conteneur (/tests/…).
@@ -18,11 +19,10 @@ rand() { openssl rand -hex 24; }
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-docker build --quiet --target test -t "$IMAGE" "$ROOT/database" >/dev/null
+docker build --quiet -t "$IMAGE" "$ROOT/database" >/dev/null
 
 docker run -d --name "$NAME" \
-  -e POSTGRES_DB=resilience \
-  -e POSTGRES_PASSWORD="$(rand)" \
+  -e MARIADB_ROOT_PASSWORD="$(rand)" \
   -e RA_DB_AUTH_PASSWORD="$(rand)" \
   -e RA_DB_PAYMENT_PASSWORD="$(rand)" \
   -e RA_DB_PAYMENT_MAINT_PASSWORD="$(rand)" \
@@ -32,8 +32,8 @@ docker run -d --name "$NAME" \
 
 # L'initialisation démarre un serveur temporaire (socket seulement) puis le
 # serveur définitif : on attend que ce dernier écoute en TCP.
-for _ in $(seq 1 60); do
-  if docker exec "$NAME" pg_isready --host=127.0.0.1 --quiet 2>/dev/null; then break; fi
+for _ in $(seq 1 90); do
+  if docker exec "$NAME" healthcheck.sh --connect 2>/dev/null; then break; fi
   if ! docker ps --quiet --filter "name=$NAME" | grep -q .; then
     docker logs "$NAME" >&2; echo "FATAL: la base n'a pas démarré" >&2; exit 1
   fi

@@ -1,9 +1,9 @@
 """Événements temps réel des transactions.
 
-Publication : `pg_notify` DANS la transaction SQL métier — PostgreSQL ne délivre la
-notification qu'au COMMIT, donc jamais d'événement pour une écriture annulée.
-Réception : une connexion LISTEN dédiée par instance alimente le diffuseur SSE ;
-toutes les instances voient ainsi tous les événements.
+Publication : ligne d'outbox écrite DANS la transaction SQL métier — elle n'est
+visible qu'après COMMIT, donc jamais d'événement pour une écriture annulée.
+Réception : chaque instance relit l'outbox récente (MariaDB n'a pas de LISTEN/NOTIFY)
+et alimente son diffuseur SSE ; toutes les instances voient ainsi tous les événements.
 """
 
 from __future__ import annotations
@@ -12,10 +12,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from typing import Any
 
-import asyncpg
-from ra_common.db import Database
+from ra_common.db import Connection, Database
 from ra_common.sse import EventBroadcaster, StreamEvent, TicketClaims
 
 from app.domain.models import ROLE_OPERATOR, ROLE_SYNTHETIC, Transaction
@@ -23,7 +23,6 @@ from app.domain.money import format_minor
 from app.repositories.transactions import TransactionRepository
 
 logger = logging.getLogger("payment.events")
-CHANNEL = "payment_events"
 
 
 def transaction_payload(transaction: Transaction, minor_units: int) -> dict[str, Any]:
@@ -50,7 +49,7 @@ class TransactionEventPublisher:
         self._repository = repository
         self._currencies = currencies
 
-    async def publish(self, conn: asyncpg.Connection, event_type: str, transaction: Transaction) -> None:
+    async def publish(self, conn: Connection, event_type: str, transaction: Transaction) -> None:
         message = {
             "type": event_type,
             "payload": transaction_payload(transaction, self._currencies[transaction.currency]),
@@ -61,7 +60,7 @@ class TransactionEventPublisher:
                 "synthetic": transaction.is_synthetic,
             },
         }
-        await self._repository.notify(conn, CHANNEL, json.dumps(message, separators=(",", ":")))
+        await self._repository.add_event(conn, json.dumps(message, separators=(",", ":")))
 
 
 def visibility_filter(ticket: TicketClaims):
@@ -81,9 +80,21 @@ def visibility_filter(ticket: TicketClaims):
 
 
 class TransactionEventListener:
+    """Relit l'outbox toutes les POLL_SECONDS ; chaque id n'est diffusé qu'une fois.
+
+    shortcut: un COMMIT survenant plus de WINDOW_SECONDS après l'écriture de l'événement est
+    manqué (les requêtes sont bornées à quelques secondes) ; passer à un curseur par id + délai
+    de garde si des transactions longues apparaissent.
+    """
+
+    POLL_SECONDS = 0.5
+    WINDOW_SECONDS = 30
+    RETENTION_SECONDS = 300
+
     def __init__(self, db: Database, broadcaster: EventBroadcaster) -> None:
         self._db = db
         self._broadcaster = broadcaster
+        self._repository = TransactionRepository()
         self._task: asyncio.Task[None] | None = None
         self._connected = False
 
@@ -100,7 +111,7 @@ class TransactionEventListener:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
 
-    def _on_notification(self, _conn: Any, _pid: int, _channel: str, payload: str) -> None:
+    def _publish(self, payload: str) -> None:
         try:
             message = json.loads(payload)
             self._broadcaster.publish(message["type"], message["payload"], meta=message.get("meta", {}))
@@ -108,36 +119,29 @@ class TransactionEventListener:
             logger.exception("invalid event notification", extra={"event": "events.invalid_notification"})
 
     async def _run(self) -> None:
-        delay = 0.5
+        seen: set[int] | None = None  # None : premier passage, l'historique n'est pas rediffusé
+        purged_at = 0.0
         while True:
-            terminated = asyncio.Event()
-            connection: asyncpg.Connection | None = None
             try:
-                connection = await asyncpg.connect(**self._db.connect_kwargs, timeout=5)
-                connection.add_termination_listener(lambda _conn: terminated.set())
-                await connection.add_listener(CHANNEL, self._on_notification)
+                async with self._db.connection() as conn:
+                    rows = await self._repository.events_since(conn, self.WINDOW_SECONDS)
+                    if time.monotonic() - purged_at > 60:
+                        await self._repository.purge_events(conn, self.RETENTION_SECONDS)
+                        purged_at = time.monotonic()
+                if seen is not None:
+                    for row in rows:
+                        if row["id"] not in seen:
+                            self._publish(row["payload"])
+                seen = {row["id"] for row in rows}
+                if not self._connected:
+                    logger.info("listening for transaction events", extra={"event": "events.listening"})
                 self._connected = True
-                delay = 0.5
-                logger.info("listening for transaction events", extra={"event": "events.listening"})
-                while not terminated.is_set():
-                    # Sonde périodique : détecte une connexion à moitié ouverte.
-                    with contextlib.suppress(TimeoutError):
-                        await asyncio.wait_for(terminated.wait(), timeout=15)
-                    if not terminated.is_set():
-                        await connection.fetchval("SELECT 1", timeout=5)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - le superviseur doit survivre à toute panne
-                logger.warning(
-                    "event listener disconnected (%s), reconnecting in %.1fs",
-                    exc.__class__.__name__,
-                    delay,
-                    extra={"event": "events.listener_down"},
-                )
-            finally:
+                if self._connected:
+                    logger.warning(
+                        "event listener disconnected (%s)", exc.__class__.__name__, extra={"event": "events.listener_down"}
+                    )
                 self._connected = False
-                if connection is not None and not connection.is_closed():
-                    with contextlib.suppress(Exception):
-                        await connection.close(timeout=2)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 10.0)
+            await asyncio.sleep(self.POLL_SECONDS)

@@ -30,7 +30,7 @@ flowchart LR
     end
 
     subgraph DATA["réseau data (internal)"]
-        PG[("PostgreSQL 17<br/>schémas auth / payment / remediation")]
+        PG[("MariaDB externe<br/>bases ra_auth / ra_payment / ra_remediation")]
     end
 
     Browser((Navigateur)) -->|HTTPS| GW
@@ -64,8 +64,8 @@ L'interface d'orchestration n'est donc **jamais routable** depuis la passerelle 
 | Composant | Techno | Responsabilité | Rôle(s) BDD |
 |---|---|---|---|
 | `auth-service` | Python 3.12 · FastAPI · PyJWT (RS256) · argon2-cffi | Login humain, `client_credentials` M2M, refresh rotatif, révocation, JWKS, RBAC | `auth_app` |
-| `payment-api` | Python 3.12 · FastAPI · asyncpg (SQL explicite, invariants en base) · LISTEN/NOTIFY → SSE | Cycle de vie des transactions, idempotence, santé avancée, administration de remédiation | `payment_app` (runtime), `payment_maint` (admin) |
-| `database` | PostgreSQL 17 | Persistance, invariants financiers en base (triggers, contraintes), intégrité/réparation | — |
+| `payment-api` | Python 3.12 · FastAPI · aiomysql (SQL explicite, invariants en base) · outbox → SSE | Cycle de vie des transactions, idempotence, santé avancée, administration de remédiation | `ra_payment_app` (runtime), `ra_payment_maint` (admin) |
+| `database` | MariaDB >= 10.6 (instance externe) | Persistance, invariants financiers en base (triggers, contraintes, procédures), intégrité/réparation | — |
 | `remediation-engine` | Python 3.12 · FastAPI · asyncio · httpx · 2 serveurs uvicorn dans un processus | Webhook, machine à états d'incident, runner de playbooks, connecteurs, STM, watchdog intégré, flux SSE, CLI `ra-ctl` | `remediation_app` |
 | `frontend-dashboard` | React 18 · TypeScript · Vite · Tailwind CSS · nginx-unprivileged | SPA (Portail métier, NOC/SOC, Assistant) + passerelle reverse-proxy | — |
 | `socket-proxy` | wollomatic/socket-proxy 1.10.0 (uid 65534, groupe du socket) | Accès Docker restreint : `GET /_ping`, `GET /containers/json`, `POST /containers/<id 64 hex>/restart` ; client autorisé : 172.30.40.10 uniquement | — |
@@ -115,7 +115,7 @@ resilience-alpha/
 │           ├── problem.py                      RFC 9457 problem+json + handlers
 │           ├── health.py                       format application/health+json
 │           ├── metrics.py                      métriques Prometheus communes
-│           ├── db.py                           L3  pool asyncpg, transactions, SQLSTATE applicatifs
+│           ├── db.py                           L3  pool aiomysql, transactions, SQLSTATE applicatifs
 │           ├── sse.py                          L3  tickets signés, diffusion avec reprise, flux SSE
 │           ├── ratelimit.py                    L4  fenêtre glissante par clé (quotas, webhook)
 │           └── security/
@@ -199,7 +199,7 @@ Tous les réseaux sont `internal: true` (aucune sortie Internet) sauf `edge`.
 | `app` | frontend-dashboard, auth-service, payment-api, remediation-engine (:8002 + client sortant), RAG | Trafic métier et supervision |
 | `control` | remediation-engine (:8001), moteur de détection | Webhook d'alertes et pilotage, isolés de la passerelle |
 | `docker-ctl` | remediation-engine, socket-proxy | Seul chemin vers le démon Docker |
-| `data` | postgres, auth-service, payment-api, remediation-engine | Base non joignable depuis la passerelle |
+| `data` | auth-service, payment-api, remediation-engine | Sortie NAT vers la base externe (DB_HOST) ; base non joignable depuis la passerelle |
 | `observability` | payment-api, auth-service, remediation-engine, Prometheus/Loki (autre lot) | Scrape `/metrics`, collecte de logs |
 
 **Plan d'adressage** (adresses fixes, nécessaires au lien d'un listener à un seul réseau) :
@@ -208,7 +208,7 @@ Tous les réseaux sont `internal: true` (aucune sortie Internet) sauf `edge`.
 |---|---|---|
 | `app` | 172.30.10.0/24 | remediation-engine (SUPERVISION) .10 · auth-service .20 · payment-api .30 · frontend-dashboard .50 |
 | `control` | 172.30.20.0/24 | remediation-engine (CONTROL) .10 |
-| `data` | 172.30.30.0/24 | postgres .10 |
+| `data` | 172.30.30.0/24 | (base externe : DB_HOST) |
 | `docker-ctl` | 172.30.40.0/24 | remediation-engine .10 · socket-proxy .20 |
 
 Conséquence vérifiée par les tests : un conteneur présent sur `app` **et** `control` qui résout `remediation-engine` obtient l'adresse du réseau `app`, où le port 8001 n'existe pas (connexion refusée). Les clients du webhook doivent donc cibler l'adresse du réseau `control` (`172.30.20.10:8001`), seule exposition du listener d'orchestration.
@@ -272,7 +272,7 @@ Séparation stricte : les opérations métier (`payment.*`) et les opérations d
 
 ### 5.3 Moindre privilège — synthèse
 
-* **Base** : un rôle PostgreSQL par service, cloisonné à son schéma ; `payment_app` n'a ni `UPDATE` sur les soldes ni `INSERT` sur le grand livre (tout passe par `fn_execute_transaction`) ; les fonctions de réparation ne sont exécutables que par `payment_maint`, utilisé uniquement par les routes `/admin`.
+* **Base** : un compte MariaDB par service, cloisonné à sa base ; `ra_payment_app` n'a ni `UPDATE` sur les soldes ni `INSERT` sur le grand livre (tout passe par `sp_execute_transaction`) ; les procédures de réparation ne sont exécutables que par `ra_payment_maint`, utilisé uniquement par les routes `/admin`.
 * **Docker** : le moteur ne voit jamais `/var/run/docker.sock` ; le proxy n'autorise que `POST /containers/{auth-service|payment-api}/restart` et `GET /containers/json` ; le moteur vérifie en plus le label `resilience.remediable=true`.
 * **Webhook** : JWT `svc.detector` **et** signature HMAC-SHA256 horodatée (fenêtre 300 s, anti-rejeu par `external_id`).
 * **Conteneurs** : utilisateur non-root, `read_only: true`, `cap_drop: [ALL]`, `no-new-privileges`, `tmpfs` pour `/tmp`.

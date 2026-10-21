@@ -6,8 +6,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-import asyncpg
-from ra_common.db import sqlstate
+from ra_common.db import DatabaseError, ForeignKeyViolationError, UniqueViolationError, sqlstate
 
 from app.core.config import Settings
 from app.core.db import Database
@@ -179,9 +178,9 @@ class PrincipalService:
                         await self._principals.grant_role(conn, principal_id, role, UUID(actor.sub))
                     else:
                         await self._principals.revoke_role(conn, principal_id, role)
-            except asyncpg.ForeignKeyViolationError as exc:
+            except ForeignKeyViolationError as exc:
                 raise InvalidState(f"unknown role {role}") from exc
-            except asyncpg.PostgresError as exc:
+            except DatabaseError as exc:
                 if sqlstate(exc) == "RA101":
                     raise PolicyViolation(str(exc)) from exc
                 raise
@@ -209,7 +208,7 @@ class PrincipalService:
         async with self._db.transaction() as conn:
             try:
                 principal_id = await self._principals.create_user(conn, username, display_name, secret_hash)
-            except asyncpg.UniqueViolationError as exc:
+            except UniqueViolationError as exc:
                 raise InvalidState("username already taken") from exc
             await self._audit.record(
                 conn, event_type="PRINCIPAL_CREATED", outcome="SUCCESS", principal_id=principal_id, actor_principal_id=actor.sub

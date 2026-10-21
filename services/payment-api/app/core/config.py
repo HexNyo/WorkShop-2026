@@ -21,14 +21,14 @@ class Settings(BaseSettings):
     enable_docs: bool = False
 
     # --- base de données : deux identités distinctes (moindre privilège) -----------
-    db_host: str = "postgres"
-    db_port: int = Field(5432, ge=1, le=65535)
-    db_name: str = "resilience"
-    db_user: str = "payment_app"
+    db_host: str = "mariadb"
+    db_port: int = Field(3306, ge=1, le=65535)
+    db_name: str = "ra_payment"
+    db_user: str = "ra_payment_app"
     db_password: SecretStr
     db_pool_min_size: int = Field(2, ge=1, le=50)
     db_pool_max_size: int = Field(10, ge=1, le=100)
-    db_maint_user: str = "payment_maint"
+    db_maint_user: str = "ra_payment_maint"
     db_maint_password: SecretStr
     db_maint_pool_max_size: int = Field(3, ge=1, le=5)
     db_connect_timeout_seconds: int = Field(60, ge=1, le=600)

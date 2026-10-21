@@ -1,10 +1,11 @@
 # =============================================================================
 # PROJECT RESILIENCE-ALPHA — orchestration locale
 # -----------------------------------------------------------------------------
-# Prérequis : `./scripts/generate-dev-secrets.sh` (crée .env, ignoré par git).
+# Prérequis : `./scripts/generate-dev-secrets.sh` (crée .env, ignoré par git) et une
+# instance MariaDB >= 10.6 joignable sur DB_HOST:DB_PORT, initialisée une seule fois :
+#   MARIADB_ADMIN_PASSWORD=... docker compose --profile init run --rm db-init
 #   docker compose up -d --build                      # plateforme
 #   docker compose --profile test run --rm auth-tests # tests e2e auth-service
-# Lot 2 : database + auth-service. Les lots suivants complètent ce fichier.
 # =============================================================================
 name: resilience-alpha
 
@@ -33,41 +34,35 @@ x-auth-bootstrap: &auth-bootstrap
   AUTH_BOOTSTRAP_SVC_PAYMENT_API_SECRET: ${AUTH_BOOTSTRAP_SVC_PAYMENT_API_SECRET:-}
 
 services:
-  # ---------------------------------------------------------------- database
-  postgres:
-    <<: *hardening
-    build:
-      context: ./database
-      target: runtime
-    image: resilience-alpha/database:1.0.0
-    command:
-      - postgres
-      - -c
-      - log_connections=on
-      - -c
-      - log_disconnections=on
-      - -c
-      - log_min_duration_statement=500
-      - -c
-      - log_line_prefix=%m [%p] %q%u@%d
+  # ------------------------------------------- base : initialisation (une fois)
+  # La base est une instance MariaDB externe (DB_HOST) : ce conteneur ne fait que
+  # lui appliquer database/init (bases ra_*, comptes, démo) puis s'arrête.
+  # Le mot de passe administrateur est passé dans l'environnement, jamais dans .env.
+  db-init:
+    profiles: ["init"]
+    image: mariadb:11.4.4
+    entrypoint: ["bash", "/srv/database/apply.sh"]
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-resilience}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/generate-dev-secrets.sh}
+      MARIADB_ADMIN_HOST: ${DB_HOST:?adresse de l'instance MariaDB}
+      MARIADB_ADMIN_PORT: ${DB_PORT:-3306}
+      MARIADB_ADMIN_USER: ${MARIADB_ADMIN_USER:-root}
+      # Vide hors initialisation (compose interpole aussi les profils inactifs) ; apply.sh l'exige.
+      MARIADB_ADMIN_PASSWORD: ${MARIADB_ADMIN_PASSWORD:-}
+      RA_DB_CLIENT_HOST: ${RA_DB_CLIENT_HOST:-%}
       RA_DB_AUTH_PASSWORD: ${RA_DB_AUTH_PASSWORD:?missing}
       RA_DB_PAYMENT_PASSWORD: ${RA_DB_PAYMENT_PASSWORD:?missing}
       RA_DB_PAYMENT_MAINT_PASSWORD: ${RA_DB_PAYMENT_MAINT_PASSWORD:?missing}
       RA_DB_REMEDIATION_PASSWORD: ${RA_DB_REMEDIATION_PASSWORD:?missing}
       CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    tmpfs:
-      - /var/run/postgresql:size=1m,uid=70,gid=70
-      - /tmp:size=64m,uid=70,gid=70
-    shm_size: 128m
+      - ./database:/srv/database:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
-      data:
-        ipv4_address: 172.30.30.10
+      - data
 
   # ------------------------------------------------------------ auth-service
   auth-service:
@@ -80,15 +75,13 @@ services:
     labels:
       resilience.service: auth-service
       resilience.remediable: "true"
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       <<: *auth-bootstrap
       AUTH_LOG_LEVEL: ${AUTH_LOG_LEVEL:-INFO}
-      AUTH_DB_HOST: postgres
-      AUTH_DB_NAME: ${POSTGRES_DB:-resilience}
-      AUTH_DB_USER: auth_app
+      AUTH_DB_HOST: ${DB_HOST:?adresse de l'instance MariaDB}
+      AUTH_DB_PORT: ${DB_PORT:-3306}
+      AUTH_DB_NAME: ra_auth
+      AUTH_DB_USER: ra_auth_app
       AUTH_DB_PASSWORD: ${RA_DB_AUTH_PASSWORD:?missing}
       AUTH_ISSUER: ${AUTH_ISSUER:?missing}
       AUTH_JWT_PRIVATE_KEY_PEM_B64: ${AUTH_JWT_PRIVATE_KEY_PEM_B64:?missing}
@@ -125,17 +118,16 @@ services:
       resilience.service: payment-api
       resilience.remediable: "true"
     depends_on:
-      postgres:
-        condition: service_healthy
       auth-service:
         condition: service_healthy
     environment:
       PAYMENT_LOG_LEVEL: ${PAYMENT_LOG_LEVEL:-INFO}
-      PAYMENT_DB_HOST: postgres
-      PAYMENT_DB_NAME: ${POSTGRES_DB:-resilience}
-      PAYMENT_DB_USER: payment_app
+      PAYMENT_DB_HOST: ${DB_HOST:?adresse de l'instance MariaDB}
+      PAYMENT_DB_PORT: ${DB_PORT:-3306}
+      PAYMENT_DB_NAME: ra_payment
+      PAYMENT_DB_USER: ra_payment_app
       PAYMENT_DB_PASSWORD: ${RA_DB_PAYMENT_PASSWORD:?missing}
-      PAYMENT_DB_MAINT_USER: payment_maint
+      PAYMENT_DB_MAINT_USER: ra_payment_maint
       PAYMENT_DB_MAINT_PASSWORD: ${RA_DB_PAYMENT_MAINT_PASSWORD:?missing}
       PAYMENT_DB_POOL_MAX_SIZE: ${PAYMENT_DB_POOL_MAX_SIZE:-10}
       PAYMENT_AUTH_BASE_URL: http://auth-service:8000
@@ -196,8 +188,6 @@ services:
       target: runtime
     image: resilience-alpha/remediation-engine:1.0.0
     depends_on:
-      postgres:
-        condition: service_healthy
       auth-service:
         condition: service_healthy
       payment-api:
@@ -208,9 +198,10 @@ services:
       REMEDIATION_LOG_LEVEL: ${REMEDIATION_LOG_LEVEL:-INFO}
       REMEDIATION_CONTROL_BIND_HOST: 172.30.20.10
       REMEDIATION_SUPERVISION_BIND_HOST: 172.30.10.10
-      REMEDIATION_DB_HOST: postgres
-      REMEDIATION_DB_NAME: ${POSTGRES_DB:-resilience}
-      REMEDIATION_DB_USER: remediation_app
+      REMEDIATION_DB_HOST: ${DB_HOST:?adresse de l'instance MariaDB}
+      REMEDIATION_DB_PORT: ${DB_PORT:-3306}
+      REMEDIATION_DB_NAME: ra_remediation
+      REMEDIATION_DB_USER: ra_remediation_app
       REMEDIATION_DB_PASSWORD: ${RA_DB_REMEDIATION_PASSWORD:?missing}
       REMEDIATION_AUTH_BASE_URL: http://auth-service:8000
       REMEDIATION_AUTH_ISSUER: ${AUTH_ISSUER:?missing}
@@ -487,8 +478,9 @@ networks:
     ipam:
       config:
         - subnet: 172.30.40.0/24
+  # Sortie NAT vers l'instance MariaDB externe (DB_HOST, réseau local de l'hôte).
+  # Non interne : restreindre sur l'hôte la sortie de 172.30.30.0/24 à DB_HOST:DB_PORT.
   data:
-    internal: true
     ipam:
       config:
         - subnet: 172.30.30.0/24
@@ -499,5 +491,4 @@ networks:
   iot: {}
 
 volumes:
-  pgdata:
   ollama-models:

@@ -29,13 +29,12 @@ async def readiness(container: Container = Depends(get_container)) -> JSONRespon
     try:
         latency = await container.db.ping()
         status = "pass" if latency < _DB_LATENCY_FAIL_MS else "fail"
-        checks["postgres:connectivity"] = CheckResult(status, round(latency, 2), "ms")
+        checks["database:connectivity"] = CheckResult(status, round(latency, 2), "ms")
     except (*UNAVAILABLE_ERRORS, RuntimeError) as exc:
-        checks["postgres:connectivity"] = CheckResult("fail", output=exc.__class__.__name__)
-    pool = container.db.pool
-    in_use = pool.get_size() - pool.get_idle_size()
-    ratio = in_use / max(pool.get_max_size(), 1)
-    checks["postgres:pool"] = CheckResult("warn" if ratio > 0.8 else "pass", round(ratio, 2), "ratio_in_use")
+        checks["database:connectivity"] = CheckResult("fail", output=exc.__class__.__name__)
+    in_use, _idle, maximum = container.db.pool_usage()
+    ratio = in_use / max(maximum, 1)
+    checks["database:pool"] = CheckResult("warn" if ratio > 0.8 else "pass", round(ratio, 2), "ratio_in_use")
     checks["signing:key"] = CheckResult("pass", container.keys.kid, "kid")
     return health_response(service=settings.service_name, version=settings.version, checks=checks)
 

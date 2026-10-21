@@ -23,7 +23,7 @@ def test_health_jwks_and_metrics(client: httpx.Client) -> None:
     readiness = client.get("/health/readiness")
     assert readiness.status_code == 200
     assert readiness.headers["content-type"].startswith("application/health+json")
-    assert readiness.json()["checks"]["postgres:connectivity"][0]["status"] == "pass"
+    assert readiness.json()["checks"]["database:connectivity"][0]["status"] == "pass"
 
     jwks = client.get("/.well-known/jwks.json").json()
     assert jwks["keys"] and all("d" not in key for key in jwks["keys"])

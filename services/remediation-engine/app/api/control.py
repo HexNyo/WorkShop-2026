@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import ValidationError
+from ra_common.db import UniqueViolationError
 from ra_common.problem import ProblemException, not_found
 from ra_common.security import AccessTokenClaims, require_roles
 from starlette.responses import JSONResponse
@@ -208,7 +208,7 @@ async def patch_playbook(
     try:
         async with container.db.transaction() as conn:
             row = await container.playbooks.set_enabled(conn, code, body.enabled)
-    except asyncpg.UniqueViolationError as exc:
+    except UniqueViolationError as exc:
         raise ProblemException(409, "INVALID_STATE", "Conflict", "Another playbook is already enabled for this category") from exc
     if row is None:
         raise not_found("Playbook not found")

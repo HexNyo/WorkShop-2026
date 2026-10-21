@@ -1,16 +1,16 @@
 # 02 — Modèle de données (MCD / MPD)
 
-> Implémentation de référence : [database/init/](../database/init/) — PostgreSQL 17.
+> Implémentation de référence : [database/init/](../database/init/) — MariaDB >= 10.6 (instance externe, initialisée par [database/apply.sh](../database/apply.sh)).
 > Validée par la suite [database/tests/test_invariants.sh](../database/tests/test_invariants.sh) (43 assertions, via [scripts/test-database.sh](../scripts/test-database.sh)).
 
 ## 1. Principes
 
-1. **Une base, trois schémas, trois propriétaires fonctionnels** — `auth`, `payment`, `remediation`. Aucun service ne lit le schéma d'un autre : les interactions passent exclusivement par les API. Les références inter-domaines (`owner_principal_id`, `incident_id`…) sont **logiques** (UUID sans FK) pour préserver le découplage et permettre une scission future en bases distinctes.
+1. **Une instance, trois bases, trois propriétaires fonctionnels** — `ra_auth`, `ra_payment`, `ra_remediation`. Aucun service ne lit la base d'un autre : les interactions passent exclusivement par les API. Les références inter-domaines (`owner_principal_id`, `incident_id`…) sont **logiques** (UUID sans FK) pour préserver le découplage et permettre une scission future en bases distinctes.
 2. **La base est la dernière ligne de défense** : les invariants financiers et le critère de clôture d'incident sont garantis par contraintes et déclencheurs, même si le code applicatif est défaillant ou compromis.
 3. **Append-only par défaut** pour tout ce qui relève de la preuve (grand livre, historiques, audit) — y compris contre le propriétaire et le superutilisateur (hors désactivation explicite des triggers).
 4. **Montants en `bigint` d'unités mineures**, jamais de type flottant.
 
-## 2. MCD — schéma `auth`
+## 2. MCD — base `ra_auth`
 
 ```mermaid
 erDiagram
@@ -32,8 +32,8 @@ erDiagram
         text secret_hash "Argon2id ou '!'"
         bool is_active
         int failed_login_count
-        timestamptz locked_until
-        timestamptz tokens_valid_after
+        datetime locked_until
+        datetime tokens_valid_after
     }
     PRINCIPAL_ROLES {
         uuid principal_id PK,FK
@@ -45,28 +45,28 @@ erDiagram
         uuid family_id
         uuid principal_id FK
         bytea token_hash UK "SHA-256"
-        timestamptz expires_at
-        timestamptz used_at
-        timestamptz revoked_at
+        datetime expires_at
+        datetime used_at
+        datetime revoked_at
     }
     REVOCATION_EVENTS {
         bigint seq PK "curseur de synchro"
         enum kind "JTI | PRINCIPAL"
         uuid jti
         uuid principal_id FK
-        timestamptz not_before
-        timestamptz expires_at "horizon de purge"
+        datetime not_before
+        datetime expires_at "horizon de purge"
     }
     AUDIT_EVENTS {
         bigint id PK
         varchar event_type
         varchar outcome
         uuid principal_id
-        jsonb details
+        json details
     }
 ```
 
-## 3. MCD — schéma `payment`
+## 3. MCD — base `ra_payment`
 
 ```mermaid
 erDiagram
@@ -125,11 +125,11 @@ erDiagram
         uuid transaction_id FK
         enum from_status
         enum to_status
-        timestamptz changed_at
+        datetime changed_at
     }
     RUNTIME_FLAGS {
         varchar key PK
-        jsonb value
+        json value
         varchar reason
         uuid incident_id
     }
@@ -138,7 +138,7 @@ erDiagram
         varchar trigger_source
         bool passed
         int critical_failures
-        jsonb checks
+        json checks
     }
 ```
 
@@ -151,7 +151,7 @@ stateDiagram-v2
     PENDING --> REJECTED : contrôle métier KO
     PENDING --> CANCELLED : annulation
     PENDING --> FAILED : erreur technique / purge STALE_PURGED
-    VALIDATED --> EXECUTED : fn_execute_transaction (2 écritures)
+    VALIDATED --> EXECUTED : sp_execute_transaction (2 écritures)
     VALIDATED --> REJECTED : provision insuffisante / compte gelé
     VALIDATED --> CANCELLED : annulation
     VALIDATED --> FAILED : divergence RA009 / purge
@@ -176,7 +176,7 @@ account_balances     = projection de la dernière écriture (balance_after, seq,
 
 Avant toute nouvelle écriture, le déclencheur compare la projection `account_balances` à la queue du grand livre (`v_account_ledger_tail`). Toute divergence (altération directe d'un solde) **bloque l'écriture** avec `RA009` : le système passe en mode *fail-safe* sur le compte concerné, et l'anomalie devient détectable (métrique `ra_ledger_divergence_total`, rapport d'intégrité).
 
-## 4. MCD — schéma `remediation`
+## 4. MCD — base `ra_remediation`
 
 ```mermaid
 erDiagram
@@ -195,8 +195,8 @@ erDiagram
         varchar code PK "PB-…"
         int version
         enum category "UK si enabled"
-        jsonb steps
-        jsonb post_verification_steps
+        json steps
+        json post_verification_steps
         smallint max_attempts
         int cooldown_seconds
         bool enabled
@@ -212,14 +212,14 @@ erDiagram
         uuid target_principal_id
         uuid target_account_id
         smallint attempt_count
-        timestamptz verified_at "obligatoire si RESOLVED"
+        datetime verified_at "obligatoire si RESOLVED"
     }
     ALERTS {
         uuid id PK
         varchar source "UK avec external_id"
         varchar external_id
         char fingerprint
-        jsonb payload
+        json payload
         uuid incident_id FK
     }
     EXECUTIONS {
@@ -235,7 +235,7 @@ erDiagram
         smallint seq
         varchar action "ex. docker.restart_container"
         enum status
-        jsonb output
+        json output
     }
     VERIFICATION_RUNS {
         uuid id PK
@@ -256,12 +256,12 @@ erDiagram
         service service
         enum status "UP | DEGRADED | DOWN | UNKNOWN"
         int latency_ms
-        timestamptz observed_at
+        datetime observed_at
     }
     PHASE_HISTORY {
         bigint id PK
         enum phase
-        timestamptz entered_at
+        datetime entered_at
         uuid incident_id FK
     }
 ```
@@ -270,20 +270,20 @@ erDiagram
 
 | # | Invariant | Mécanisme | Erreur |
 |---|---|---|---|
-| I1 | Un solde ne change que via le grand livre | `payment_app` sans `UPDATE` sur `account_balances` ; mise à jour exclusivement par `fn_ledger_before_insert` (`SECURITY DEFINER`) | `permission denied` |
-| I2 | Grand livre append-only | Triggers `BEFORE UPDATE/DELETE/TRUNCATE` | `RA006` |
-| I3 | Partie double | `UNIQUE(transaction_id, direction)` + contrainte différée `trg_ledger_double_entry` + contrôle à la transition `EXECUTED` | `RA007` |
+| I1 | Un solde ne change que via le grand livre | `payment_app` sans `UPDATE` sur `account_balances` ; mise à jour exclusivement par `trg_ledger_before_insert` (DEFINER `ra_owner`) | `command denied` |
+| I2 | Grand livre append-only | Triggers `BEFORE UPDATE/DELETE` (TRUNCATE exige `DROP`, jamais accordé) | `RA006` |
+| I3 | Partie double | `UNIQUE(transaction_id, direction)` + contrôle en fin de `sp_execute_transaction` (seul chemin d'écriture) + contrôle à la transition `EXECUTED` | `RA007` |
 | I4 | Détection d'altération | Chaîne SHA-256 par compte ; comparaison projection / queue du grand livre avant écriture | `RA009` |
 | I5 | Solde ≥ 0, masse monétaire constante | `CHECK` + contrôle `MONEY_CONSERVATION` | `RA003` |
 | I6 | États et champs financiers immuables | Triggers de transition + privilèges par colonne | `RA008`, `RA011` |
 | I7 | Ségrégation synthétique | `CHECK (is_synthetic = account_number LIKE 'RA-9%')` + contrôle à l'insertion | `RA010` |
 | I8 | Idempotence | `UNIQUE(initiator_principal_id, idempotency_key)` + `request_fingerprint` | `23505` → HTTP 409 si payload différent |
-| R1 | **Pas de clôture d'incident sans STM réussi** | `fn_incidents_before_update` : dernière `verification_run` = `PASSED` | `RA203` |
-| R2 | Un incident ouvert par empreinte | Index unique partiel | `23505` → déduplication |
-| R3 | Une exécution active par incident | Index unique partiel `WHERE status='RUNNING'` | `23505` |
-| R4 | Un playbook actif par catégorie | Index unique partiel `WHERE enabled` | `23505` |
+| R1 | **Pas de clôture d'incident sans STM réussi** | `trg_incidents_before_update` : dernière `verification_run` = `PASSED` | `RA203` |
+| R2 | Un incident ouvert par empreinte | Colonne générée `open_fingerprint` (NULL une fois clos) + index unique | `23505` → déduplication |
+| R3 | Une exécution active par incident | Colonne générée `running_incident` + index unique | `23505` |
+| R4 | Un playbook actif par catégorie | Colonne générée `active_category` + index unique | `23505` |
 
-## 6. Rapport d'intégrité — `payment.fn_integrity_report()`
+## 6. Rapport d'intégrité — `ra_payment.sp_integrity_report`
 
 | Code | Sévérité | Vérifie |
 |---|---|---|
@@ -301,19 +301,19 @@ Chaque ligne renvoie `passed`, `violations` et un échantillon JSON (≤ 5 élé
 
 | Fonction | Rôle autorisé | Effet |
 |---|---|---|
-| `fn_repair_balances(reason, incident_id, dry_run)` | `payment_maint` | Verrouille les soldes, **refuse** (`RA012`) si `LEDGER_HASH_CHAIN` ou `LEDGER_RUNNING_BALANCE` échoue (grand livre compromis ⇒ restauration de sauvegarde, escalade humaine) ; sinon reconstruit la projection depuis le grand livre et trace chaque correction dans `integrity_repairs` |
-| `fn_fail_stale_transactions(older_than, reason, incident_id)` | `payment_maint` | Passe en `FAILED/STALE_PURGED` les transactions bloquées en vol (jamais de suppression) ; seuil minimal 60 s |
+| `sp_repair_balances(reason, incident_id, dry_run)` | `payment_maint` | Verrouille les soldes, **refuse** (`RA012`) si `LEDGER_HASH_CHAIN` ou `LEDGER_RUNNING_BALANCE` échoue (grand livre compromis ⇒ restauration de sauvegarde, escalade humaine) ; sinon reconstruit la projection depuis le grand livre et trace chaque correction dans `integrity_repairs` |
+| `sp_fail_stale_transactions(older_than, reason, incident_id)` | `payment_maint` | Passe en `FAILED/STALE_PURGED` les transactions bloquées en vol (jamais de suppression) ; seuil minimal 60 s |
 | `UPDATE runtime_flags` | `payment_maint` | Reconfiguration à chaud (`write_mode`, plafonds) ; chaque changement est historisé dans `runtime_flag_changes` |
-| `fn_lab_tamper_balance(account, delta)` | `payment_maint` | **Laboratoire uniquement** (`CHAOS_LAB_ENABLED=true`) : altère un solde sans écriture pour simuler l'attaque |
+| `sp_lab_tamper_balance(account, delta)` | `payment_maint` | **Laboratoire uniquement** (`CHAOS_LAB_ENABLED=true`) : altère un solde sans écriture pour simuler l'attaque |
 
-## 8. Rôles PostgreSQL
+## 8. Comptes MariaDB
 
-| Rôle | Login | Privilèges |
+| Compte | Login | Privilèges (portés par le rôle `<compte>_role`) |
 |---|---|---|
-| `ra_owner` | non | Propriétaire de tous les objets ; utilisé seulement par les scripts de migration (`SET ROLE`) |
-| `auth_app` | oui | `auth.*` selon besoin, colonnes modifiables limitées, audit en insertion seule |
-| `payment_app` | oui | Lecture `payment.*`, `INSERT` transactions, `UPDATE(status, failure_code, failure_reason)`, `EXECUTE fn_execute_transaction / fn_integrity_report` |
-| `payment_maint` | oui | Lecture `payment.*`, flags, gel de comptes, fonctions de réparation/purge |
-| `remediation_app` | oui | `remediation.*` (colonnes modifiables limitées), aucun accès `auth`/`payment` |
+| `ra_owner@localhost` | non (`ACCOUNT LOCK`) | DEFINER des déclencheurs, vues et procédures : leur code s'exécute avec ses droits |
+| `ra_auth_app` | oui | `ra_auth.*` selon besoin, colonnes modifiables limitées, audit en insertion seule |
+| `ra_payment_app` | oui | Lecture `ra_payment.*`, `INSERT` transactions, `UPDATE(status, failure_code, failure_reason)`, outbox d'événements, `EXECUTE sp_execute_transaction / sp_integrity_report` |
+| `ra_payment_maint` | oui | Lecture `ra_payment.*`, flags, gel de comptes, procédures de réparation/purge |
+| `ra_remediation_app` | oui | `ra_remediation.*` (colonnes modifiables limitées), aucun accès `ra_auth`/`ra_payment` |
 
-Chaque rôle a des garde-fous de session (`statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, `CONNECTION LIMIT`). Les mots de passe sont injectés au premier démarrage par `\getenv`, chiffrés en SCRAM-SHA-256.
+Chaque compte est limité en connexions (`MAX_USER_CONNECTIONS`) et en durée de requête (`MAX_STATEMENT_TIME`), et n'est joignable que depuis `RA_DB_CLIENT_HOST`. Les sessions applicatives imposent `time_zone=+00:00`, `READ COMMITTED`, le mode strict et des délais de verrou. Les mots de passe sont lus dans l'environnement par `00_users.sh`, jamais versionnés.

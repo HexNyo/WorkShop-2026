@@ -36,10 +36,10 @@ class Settings(BaseSettings):
     supervision_port: int = Field(8002, ge=1, le=65535)
 
     # --- base de données ---------------------------------------------------------------
-    db_host: str = "postgres"
-    db_port: int = Field(5432, ge=1, le=65535)
-    db_name: str = "resilience"
-    db_user: str = "remediation_app"
+    db_host: str = "mariadb"
+    db_port: int = Field(3306, ge=1, le=65535)
+    db_name: str = "ra_remediation"
+    db_user: str = "ra_remediation_app"
     db_password: SecretStr
     db_pool_max_size: int = Field(10, ge=2, le=50)
     db_connect_timeout_seconds: int = Field(60, ge=1, le=600)

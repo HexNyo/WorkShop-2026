@@ -50,7 +50,7 @@ def bearer(gw: httpx.Client, username: str) -> dict[str, str]:
 # ------------------------------------------------------------ isolation réseau
 @pytest.mark.parametrize(
     ("host", "port"),
-    [("auth-service", 8000), ("payment-api", 8000), ("remediation-engine", 8001), ("postgres", 5432), ("socket-proxy", 2375)],
+    [("auth-service", 8000), ("payment-api", 8000), ("remediation-engine", 8001), ("socket-proxy", 2375)],
 )
 def test_internal_services_are_not_reachable_from_edge(host: str, port: int) -> None:
     with pytest.raises(OSError):

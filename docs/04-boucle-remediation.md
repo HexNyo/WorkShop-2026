@@ -16,7 +16,7 @@ sequenceDiagram
     participant BUS as RE · Bus d'événements (SSE)
     participant AUTH as auth-service
     participant PAY as payment-api
-    participant DB as PostgreSQL
+    participant DB as MariaDB
     participant UI as Console NOC/SOC
 
     rect rgb(230, 245, 230)

@@ -13,7 +13,7 @@ const HEROES: Record<string, { lines: string[]; accent: number; coord: string }>
   "/assistant": { lines: ["Demandez.", "La machine", "se souvient."], accent: 2, coord: "T+00:42" },
   "/admin": { lines: ["Qui entre,", "qui reste,", "qui part."], accent: 1, coord: "0001.α" },
 };
-const FALLBACK = { lines: ["Resilience", "Alpha."], accent: 1, coord: "—" };
+const FALLBACK = { lines: ["Workshop", "2026."], accent: 1, coord: "—" };
 const MARQUEE = "détection ✳ décision ✳ remédiation ✳ vérification ✳ zéro intervention humaine ✳ ";
 
 /** Curseur suiveur + effet magnétique sur [data-magnetic] ; souris uniquement, coupé si moins d'animations demandé. */

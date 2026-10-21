@@ -19,7 +19,7 @@ export function Button({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; busy?: boolean }) {
   const styles: Record<Variant, string> = {
-    primary: "bg-accent text-accent-ink hover:bg-accent/90 border-transparent",
+    primary: "bg-gradient-to-r from-sky-500 to-violet-500 text-white hover:brightness-110 border-transparent",
     secondary: "bg-surface text-ink hover:bg-surface-2 border-line",
     danger: "bg-critical text-white hover:bg-critical/90 border-transparent",
     ghost: "bg-transparent text-ink-2 hover:bg-surface-2 border-transparent",
@@ -174,14 +174,16 @@ export function StatTile({
   value,
   hint,
   valueClass = "text-ink",
+  className = "from-zinc-900/90",
 }: {
   label: string;
   value: ReactNode;
   hint?: string;
   valueClass?: string;
+  className?: string;
 }) {
   return (
-    <div className="rounded-xl border border-white/[0.08] bg-gradient-to-b from-zinc-900/90 to-zinc-950 px-4 py-3 transition-colors hover:border-white/[0.15]">
+    <div className={cx("rounded-xl border border-white/[0.08] bg-gradient-to-b to-zinc-950 px-4 py-3 transition-colors hover:border-white/[0.15]", className)}>
       <p className="text-xs text-muted">{label}</p>
       <p className={cx("mt-1 text-2xl font-semibold tabular-nums", valueClass)}>{value}</p>
       {hint && <p className="mt-0.5 text-[0.7rem] text-muted">{hint}</p>}

@@ -385,7 +385,7 @@ data: {"type":"transaction.updated","seq":1842,"occurred_at":"2026-10-19T08:15:3
 
 Événements : `transaction.created`, `transaction.updated`. Un client ne reçoit que les transactions qu'il a le droit de lire. Reprise via `Last-Event-ID` (tampon des 1 000 derniers événements ; au-delà, `stream.reset`).
 
-Les événements sont émis par `pg_notify` **dans** la transaction SQL métier : PostgreSQL ne les délivre qu'au COMMIT (aucun événement fantôme pour une écriture annulée) et chaque instance les reçoit via une connexion `LISTEN` dédiée. Le flux est fermé par le serveur à l'expiration du jeton d'accès d'origine (`event: stream.expired`) ou dès sa révocation (`event: stream.revoked`) ; le client demande alors un nouveau ticket avec un jeton rafraîchi.
+Les événements sont écrits dans l'outbox `ra_payment.event_outbox` **dans** la transaction SQL métier : ils ne sont visibles qu'après COMMIT (aucun événement fantôme pour une écriture annulée) et chaque instance relit l'outbox récente toutes les 500 ms. Le flux est fermé par le serveur à l'expiration du jeton d'accès d'origine (`event: stream.expired`) ou dès sa révocation (`event: stream.revoked`) ; le client demande alors un nouveau ticket avec un jeton rafraîchi.
 
 ### 2.8 Endpoints de diagnostic
 
@@ -405,8 +405,8 @@ Format `application/health+json`. Codes : `200` si `pass`/`warn`, `503` si `fail
   "service": "payment-api",
   "version": "1.0.0",
   "checks": {
-    "postgres:connectivity":  [{ "status": "pass", "observedValue": 3.2, "observedUnit": "ms", "time": "2026-10-19T08:15:30Z" }],
-    "postgres:pool":          [{ "status": "pass", "observedValue": 0.15, "observedUnit": "ratio_in_use" }],
+    "database:connectivity":  [{ "status": "pass", "observedValue": 3.2, "observedUnit": "ms", "time": "2026-10-19T08:15:30Z" }],
+    "database:pool":          [{ "status": "pass", "observedValue": 0.15, "observedUnit": "ratio_in_use" }],
     "auth:jwks":              [{ "status": "pass", "observedValue": 312, "observedUnit": "s_since_refresh" }],
     "auth:revocation-feed":   [{ "status": "pass", "observedValue": 2.1, "observedUnit": "s_since_sync" }],
     "runtime:write-mode":     [{ "status": "pass", "observedValue": "READ_WRITE" }]

@@ -64,9 +64,9 @@ async def readiness(container: Container = Depends(get_container)) -> JSONRespon
     checks: dict[str, CheckResult] = {}
     try:
         latency = await container.db.ping()
-        checks["postgres:connectivity"] = CheckResult("pass" if latency < 500 else "fail", round(latency, 2), "ms")
+        checks["database:connectivity"] = CheckResult("pass" if latency < 500 else "fail", round(latency, 2), "ms")
     except (*UNAVAILABLE_ERRORS, RuntimeError) as exc:
-        checks["postgres:connectivity"] = CheckResult("fail", output=exc.__class__.__name__)
+        checks["database:connectivity"] = CheckResult("fail", output=exc.__class__.__name__)
     checks.update(container.security.health_checks())
     docker_ok = await container.docker.ping()
     # Sans proxy Docker, seules les actions de redémarrage sont indisponibles : état dégradé.

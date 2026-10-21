@@ -17,7 +17,7 @@ def test_liveness_readiness_and_metrics(api: httpx.Client) -> None:
     readiness = api.get("/health/readiness")
     assert readiness.status_code == 200, readiness.text
     checks = readiness.json()["checks"]
-    for name in ("postgres:connectivity", "auth:jwks", "auth:revocation-feed", "runtime:write-mode", "events:listener"):
+    for name in ("database:connectivity", "auth:jwks", "auth:revocation-feed", "runtime:write-mode", "events:listener"):
         assert checks[name][0]["status"] == "pass", (name, checks[name])
     metrics = api.get("/metrics").text
     assert "ra_http_requests_total" in metrics and 'ra_write_mode{mode="READ_WRITE"} 1.0' in metrics

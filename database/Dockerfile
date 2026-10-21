@@ -1,26 +1,15 @@
 # syntax=docker/dockerfile:1.7
 # =============================================================================
-# PROJECT RESILIENCE-ALPHA — image PostgreSQL
-#   runtime (défaut) : schémas + rôles + durcissement, exécution non-root
-#   test             : runtime + suite d'acceptation (ne jamais déployer)
+# PROJECT RESILIENCE-ALPHA — instance MariaDB jetable pour les tests d'acceptation
+# (scripts/test-database.sh). En exploitation, la base est une instance MariaDB
+# externe initialisée par database/apply.sh : cette image n'est jamais déployée.
 # =============================================================================
-ARG POSTGRES_IMAGE=postgres:17.2-alpine3.21
+ARG MARIADB_IMAGE=mariadb:11.4.4
 
-FROM ${POSTGRES_IMAGE} AS base
-LABEL org.opencontainers.image.title="resilience-alpha-database" \
-      org.opencontainers.image.description="PostgreSQL 17 — schémas auth / payment / remediation" \
+FROM ${MARIADB_IMAGE}
+LABEL org.opencontainers.image.title="resilience-alpha-database-test" \
+      org.opencontainers.image.description="MariaDB — bases ra_auth / ra_payment / ra_remediation + suite d'acceptation" \
       org.opencontainers.image.version="1.0.0"
-# Les scripts d'init doivent être exécutables : sinon l'entrypoint les « source »
-# dans son propre shell (effets de bord sur set -u / exit).
+# Exécutables : l'entrypoint les lance au lieu de les « sourcer » dans son propre shell.
 COPY --chown=root:root --chmod=0755 init/ /docker-entrypoint-initdb.d/
-
-FROM base AS test
 COPY --chown=root:root --chmod=0755 tests/ /tests/
-USER postgres
-
-FROM base AS runtime
-# L'image officielle prépare $PGDATA pour l'utilisateur postgres (uid 70) :
-# aucun privilège root n'est nécessaire à l'exécution.
-USER postgres
-HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=5 \
-  CMD pg_isready --host=127.0.0.1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --quiet || exit 1

@@ -68,6 +68,7 @@ test("console NOC/SOC : état nominal, santé des services et chronologie", asyn
   await expect(page).toHaveURL(/\/supervision$/);
   await expect(page.getByTestId("phase-banner")).toBeVisible();
   await expect(page.getByTestId("service-payment-api")).toBeVisible();
+  await page.getByText("Détails techniques").click();
   await expect(page.getByTestId("phase-timeline")).toBeVisible();
   await expect(page.getByTestId("stream-status")).toHaveAttribute("data-status", "open");
   await expect(page.getByTestId("chaos-lab")).toHaveCount(0); // réservé à chaos.operator

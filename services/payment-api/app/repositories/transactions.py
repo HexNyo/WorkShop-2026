@@ -1,11 +1,11 @@
-"""Transactions : création, transitions, exécution atomique (fonction SQL), lecture paginée."""
+"""Transactions : création, transitions, exécution atomique (procédure SQL), lecture paginée."""
 
 from __future__ import annotations
 
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
-import asyncpg
+from ra_common.db import Connection, Record
 
 from app.domain.models import LedgerEntry, StatusChange, Transaction, TransactionStatus
 
@@ -13,15 +13,15 @@ _SELECT = """
 SELECT t.id, t.initiator_principal_id, t.idempotency_key, t.request_fingerprint,
        t.debit_account_id, d.account_number AS debit_account_number, d.owner_principal_id AS debit_owner_id,
        t.credit_account_id, c.account_number AS credit_account_number, c.owner_principal_id AS credit_owner_id,
-       t.amount_minor, t.currency, t.description, t.status::text AS status, t.failure_code, t.failure_reason,
+       t.amount_minor, t.currency, t.description, t.status, t.failure_code, t.failure_reason,
        t.is_synthetic, t.correlation_id, t.created_at, t.validated_at, t.executed_at, t.updated_at
-  FROM payment.transactions t
-  JOIN payment.accounts d ON d.id = t.debit_account_id
-  JOIN payment.accounts c ON c.id = t.credit_account_id
+  FROM ra_payment.transactions t
+  JOIN ra_payment.accounts d ON d.id = t.debit_account_id
+  JOIN ra_payment.accounts c ON c.id = t.credit_account_id
 """
 
 
-def _to_transaction(row: asyncpg.Record) -> Transaction:
+def _to_transaction(row: Record) -> Transaction:
     return Transaction(
         id=UUID(str(row["id"])),
         initiator_principal_id=UUID(str(row["initiator_principal_id"])),
@@ -49,17 +49,17 @@ def _to_transaction(row: asyncpg.Record) -> Transaction:
 
 
 class TransactionRepository:
-    async def get(self, conn: asyncpg.Connection, transaction_id: UUID) -> Transaction | None:
+    async def get(self, conn: Connection, transaction_id: UUID) -> Transaction | None:
         row = await conn.fetchrow(_SELECT + " WHERE t.id = $1", transaction_id)
         return _to_transaction(row) if row else None
 
-    async def get_by_idempotency_key(self, conn: asyncpg.Connection, initiator: UUID, key: str) -> Transaction | None:
+    async def get_by_idempotency_key(self, conn: Connection, initiator: UUID, key: str) -> Transaction | None:
         row = await conn.fetchrow(_SELECT + " WHERE t.initiator_principal_id = $1 AND t.idempotency_key = $2", initiator, key)
         return _to_transaction(row) if row else None
 
     async def insert(
         self,
-        conn: asyncpg.Connection,
+        conn: Connection,
         *,
         initiator: UUID,
         idempotency_key: str,
@@ -72,14 +72,15 @@ class TransactionRepository:
         is_synthetic: bool,
         correlation_id: str | None,
     ) -> UUID:
-        value = await conn.fetchval(
+        transaction_id = uuid4()
+        await conn.execute(
             """
-            INSERT INTO payment.transactions (initiator_principal_id, idempotency_key, request_fingerprint,
-                                              debit_account_id, credit_account_id, amount_minor, currency,
-                                              description, is_synthetic, correlation_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            RETURNING id
+            INSERT INTO ra_payment.transactions (id, initiator_principal_id, idempotency_key, request_fingerprint,
+                                                 debit_account_id, credit_account_id, amount_minor, currency,
+                                                 description, is_synthetic, correlation_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             """,
+            transaction_id,
             initiator,
             idempotency_key,
             fingerprint,
@@ -91,11 +92,11 @@ class TransactionRepository:
             is_synthetic,
             correlation_id,
         )
-        return UUID(str(value))
+        return transaction_id
 
     async def transition(
         self,
-        conn: asyncpg.Connection,
+        conn: Connection,
         transaction_id: UUID,
         *,
         to_status: TransactionStatus,
@@ -104,30 +105,31 @@ class TransactionRepository:
         failure_reason: str | None = None,
     ) -> bool:
         """Transition conditionnelle : False si l'état courant ne fait pas partie de `from_statuses`."""
+        allowed = ", ".join(f"${index}" for index in range(5, 5 + len(from_statuses)))
         result = await conn.execute(
-            """
-            UPDATE payment.transactions
-               SET status = $2::payment.transaction_status, failure_code = $3, failure_reason = $4
-             WHERE id = $1 AND status = ANY($5::payment.transaction_status[])
+            f"""
+            UPDATE ra_payment.transactions
+               SET status = $2, failure_code = $3, failure_reason = $4
+             WHERE id = $1 AND status IN ({allowed})
             """,
             transaction_id,
             to_status.value,
             failure_code,
             failure_reason,
-            [status.value for status in from_statuses],
+            *(status.value for status in from_statuses),
         )
         return result.endswith(" 1")
 
-    async def execute(self, conn: asyncpg.Connection, transaction_id: UUID) -> TransactionStatus:
+    async def execute(self, conn: Connection, transaction_id: UUID) -> TransactionStatus:
         """Primitive atomique en base (verrouillage ordonné, partie double, chaîne de hachage)."""
-        status = await conn.fetchval("SELECT status::text FROM payment.fn_execute_transaction($1)", transaction_id)
-        return TransactionStatus(status)
+        row = await conn.fetchrow("CALL ra_payment.sp_execute_transaction($1)", transaction_id)
+        return TransactionStatus(row["status"])
 
-    async def history(self, conn: asyncpg.Connection, transaction_id: UUID) -> list[StatusChange]:
+    async def history(self, conn: Connection, transaction_id: UUID) -> list[StatusChange]:
         rows = await conn.fetch(
             """
-            SELECT to_status::text AS status, changed_at
-              FROM payment.transaction_status_history
+            SELECT to_status AS status, changed_at
+              FROM ra_payment.transaction_status_history
              WHERE transaction_id = $1
              ORDER BY id
             """,
@@ -137,7 +139,7 @@ class TransactionRepository:
 
     async def list(
         self,
-        conn: asyncpg.Connection,
+        conn: Connection,
         *,
         visible_to: UUID | None,
         initiator: UUID | None,
@@ -150,13 +152,13 @@ class TransactionRepository:
         rows = await conn.fetch(
             _SELECT
             + """
-             WHERE ($1::uuid IS NULL OR t.initiator_principal_id = $1
-                                     OR d.owner_principal_id = $1 OR c.owner_principal_id = $1)
-               AND ($2::uuid IS NULL OR t.initiator_principal_id = $2)
-               AND ($3::boolean IS NULL OR t.is_synthetic = $3)
-               AND ($4::text IS NULL OR t.status = $4::payment.transaction_status)
-               AND ($5::uuid IS NULL OR t.debit_account_id = $5 OR t.credit_account_id = $5)
-               AND ($6::timestamptz IS NULL OR (t.created_at, t.id) < ($6, $7::uuid))
+             WHERE ($1 IS NULL OR t.initiator_principal_id = $1
+                               OR d.owner_principal_id = $1 OR c.owner_principal_id = $1)
+               AND ($2 IS NULL OR t.initiator_principal_id = $2)
+               AND ($3 IS NULL OR t.is_synthetic = $3)
+               AND ($4 IS NULL OR t.status = $4)
+               AND ($5 IS NULL OR t.debit_account_id = $5 OR t.credit_account_id = $5)
+               AND ($6 IS NULL OR (t.created_at, t.id) < ($6, $7))
              ORDER BY t.created_at DESC, t.id DESC
              LIMIT $8
             """,
@@ -172,14 +174,14 @@ class TransactionRepository:
         return [_to_transaction(row) for row in rows]
 
     async def ledger(
-        self, conn: asyncpg.Connection, account_id: UUID, *, before_seq: int | None, limit: int
+        self, conn: Connection, account_id: UUID, *, before_seq: int | None, limit: int
     ) -> list[LedgerEntry]:
         rows = await conn.fetch(
             """
-            SELECT account_seq, transaction_id, direction::text AS direction, amount_minor, currency,
+            SELECT account_seq, transaction_id, direction, amount_minor, currency,
                    balance_after_minor, entry_hash, created_at
-              FROM payment.ledger_entries
-             WHERE account_id = $1 AND ($2::bigint IS NULL OR account_seq < $2)
+              FROM ra_payment.ledger_entries
+             WHERE account_id = $1 AND ($2 IS NULL OR account_seq < $2)
              ORDER BY account_seq DESC
              LIMIT $3
             """,
@@ -201,6 +203,18 @@ class TransactionRepository:
             for row in rows
         ]
 
-    async def notify(self, conn: asyncpg.Connection, channel: str, payload: str) -> None:
-        """Notification délivrée par PostgreSQL uniquement si la transaction SQL est validée."""
-        await conn.execute("SELECT pg_notify($1, $2)", channel, payload)
+    async def add_event(self, conn: Connection, payload: str) -> None:
+        """Événement en outbox : visible des lecteurs uniquement si la transaction SQL est validée."""
+        await conn.execute("INSERT INTO ra_payment.event_outbox (payload) VALUES ($1)", payload)
+
+    async def events_since(self, conn: Connection, seconds: int) -> list[Record]:
+        return await conn.fetch(
+            "SELECT id, payload FROM ra_payment.event_outbox WHERE created_at >= CURRENT_TIMESTAMP(6) - INTERVAL $1 SECOND ORDER BY id",
+            seconds,
+        )
+
+    async def purge_events(self, conn: Connection, older_than_seconds: int) -> None:
+        await conn.execute(
+            "DELETE FROM ra_payment.event_outbox WHERE created_at < CURRENT_TIMESTAMP(6) - INTERVAL $1 SECOND",
+            older_than_seconds,
+        )

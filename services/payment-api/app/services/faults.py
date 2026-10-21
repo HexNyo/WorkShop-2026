@@ -16,8 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-import asyncpg
-from ra_common.db import Database, sqlstate
+from ra_common.db import Database, DatabaseError, sqlstate
 from ra_common.logging import log_event
 
 from app.domain.errors import LabUnavailable, ValidationFailure
@@ -141,20 +140,20 @@ class FaultInjector:
 
     async def _exhaust_pool(self) -> None:
         """Retient toutes les connexions du pool applicatif jusqu'à la levée de la panne."""
-        held: list[asyncpg.Connection] = []
+        held: list[Any] = []
         pool = self._app_db.pool
         try:
-            while len(held) < pool.get_max_size():
+            while len(held) < pool.maxsize:
                 held.append(await pool.acquire())
             await asyncio.Event().wait()
         finally:
             for connection in held:
-                await pool.release(connection)
+                pool.release(connection)
 
     async def _tamper(self, params: dict[str, Any]) -> None:
         async with self._maint_db.transaction() as conn:
             currency = await conn.fetchval(
-                "SELECT currency FROM payment.accounts WHERE account_number = $1", params["account_number"]
+                "SELECT currency FROM ra_payment.accounts WHERE account_number = $1", params["account_number"]
             )
             if currency is None:
                 raise ValidationFailure("body.params.account_number", "unknown account")
@@ -165,7 +164,7 @@ class FaultInjector:
             try:
                 async with conn.transaction():
                     await self._maintenance.tamper_balance(conn, params["account_number"], delta)
-            except asyncpg.PostgresError as exc:
+            except DatabaseError as exc:
                 if sqlstate(exc) == "42883":
                     raise LabUnavailable(
                         "Lab primitives are not installed in the database (initialise it with CHAOS_LAB_ENABLED=true)"

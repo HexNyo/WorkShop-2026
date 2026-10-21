@@ -24,7 +24,6 @@ from app.repositories.principals import PrincipalRepository
 from ra_common.logging import log_event
 
 logger = logging.getLogger("auth.bootstrap")
-_LOCK_KEY = 0x52414254  # "RABT" — sérialise l'amorçage entre réplicas
 
 
 class BootstrapError(RuntimeError):
@@ -54,7 +53,7 @@ class BootstrapService:
     async def run(self) -> None:
         initialised = rotated = pending = 0
         async with self._db.transaction() as conn:
-            await conn.execute("SELECT pg_advisory_xact_lock($1)", _LOCK_KEY)
+            await self._principals.lock_all(conn)  # sérialise l'amorçage entre réplicas
             for principal in await self._principals.list_all(conn):
                 variable = bootstrap_variable(principal.username)
                 secret = self._environ.get(variable, "")

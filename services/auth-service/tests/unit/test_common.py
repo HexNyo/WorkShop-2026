@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime
 
 import httpx
 import jwt
@@ -112,3 +113,25 @@ async def test_jwks_resolver_loads_rsa_keys(signing_keys) -> None:
         assert calls["count"] == 1, "unknown kid must not hammer the issuer"
         token = jwt.encode({"a": 1}, signing_keys.private_key, algorithm="RS256")
         assert jwt.decode(token, key, algorithms=["RS256"]) == {"a": 1}
+
+
+def test_db_facade_rewrites_queries_and_maps_errors() -> None:
+    import pymysql
+    from pymysql.constants import FIELD_TYPE
+
+    from ra_common.db import UniqueViolationError, _prepare, _rows, translate
+
+    assert _prepare("SELECT $2, $1, $2 WHERE x LIKE 'a%'", ("a", "b")) == (
+        "SELECT %s, %s, %s WHERE x LIKE 'a%%'",
+        ("b", "a", "b"),
+    )
+    signalled = translate(pymysql.err.OperationalError(1644, "RA009 balance/ledger divergence on account RA-1000-0003"))
+    assert signalled.sqlstate == "RA009"
+    duplicate = translate(pymysql.err.IntegrityError(1062, "Duplicate entry 'x' for key 'uq_transactions_idempotency'"))
+    assert isinstance(duplicate, UniqueViolationError) and duplicate.constraint_name == "uq_transactions_idempotency"
+    assert translate(pymysql.err.OperationalError(4025, "CONSTRAINT `ck_balance_non_negative` failed for `ra_payment`.`account_balances`")).sqlstate == "23514"
+
+    description = [("id", FIELD_TYPE.STRING, None, 144), ("ok", FIELD_TYPE.TINY, None, 1), ("at", FIELD_TYPE.DATETIME, None, 26)]
+    [row] = _rows(description, [("00000000-0000-4000-8000-000000000001", 1, datetime(2026, 1, 1))])
+    assert str(row["id"]) == "00000000-0000-4000-8000-000000000001" and row["ok"] is True
+    assert row["at"].tzinfo is not None

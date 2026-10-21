@@ -3,12 +3,12 @@
 
 COMPOSE ?= docker compose
 
-.PHONY: help secrets build up down reset logs ps test test-db test-auth-unit test-auth-e2e test-payment-unit test-payment-e2e test-remediation-unit test-remediation-e2e test-rag-unit test-frontend-unit test-gateway test-ui simulate-alert
+.PHONY: help secrets build up down db-init logs ps test test-db test-auth-unit test-auth-e2e test-payment-unit test-payment-e2e test-remediation-unit test-remediation-e2e test-rag-unit test-frontend-unit test-gateway test-ui simulate-alert
 
 help:
 	@echo "secrets        génère .env (secrets aléatoires, clé RSA)"
 	@echo "up / down      démarre / arrête la plateforme"
-	@echo "reset          arrête et SUPPRIME les données (volume PostgreSQL)"
+	@echo "db-init        initialise l'instance MariaDB externe (MARIADB_ADMIN_PASSWORD=...)"
 	@echo "test           exécute toutes les suites (base, unitaires, e2e)"
 
 secrets:
@@ -23,8 +23,8 @@ up:
 down:
 	$(COMPOSE) down
 
-reset:
-	$(COMPOSE) down --volumes
+db-init:
+	$(COMPOSE) --profile init run --rm db-init
 
 logs:
 	$(COMPOSE) logs -f --tail=100

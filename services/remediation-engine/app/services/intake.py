@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-import asyncpg
-from ra_common.db import Database
+from ra_common.db import Database, UniqueViolationError
 from ra_common.logging import log_event
 
 from app.domain.models import AlertSubmission, IncidentStatus, IntakeResult, Severity
@@ -43,7 +42,7 @@ class AlertIntake:
     async def submit(self, alert: AlertSubmission) -> IntakeResult:
         try:
             result = await self._submit(alert)
-        except asyncpg.UniqueViolationError:
+        except UniqueViolationError:
             # Course entre deux livraisons simultanées : la seconde devient un rejeu / doublon.
             result = await self._submit(alert)
         if result.replayed:
@@ -107,8 +106,8 @@ class AlertIntake:
                     incident_status=IncidentStatus(existing["incident_status"]),
                     replayed=True,
                 )
-            # Sérialise les alertes d'une même empreinte (déduplication sans course).
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", alert.fingerprint)
+            # Course entre deux alertes d'une même empreinte : uq_incidents_open_fingerprint fait
+            # échouer la seconde création, que submit() rejoue en déduplication.
             incident = await self._incidents.find_open(conn, alert.fingerprint)
             if incident is not None:
                 alert_id = await self._alerts.insert(conn, alert, incident.id)

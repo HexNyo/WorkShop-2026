@@ -1,6 +1,6 @@
 """Diagnostic d'intégrité : cohérence des données ET de la logique métier.
 
-* données : `payment.fn_integrity_report()` (7 contrôles, cf. docs/02) ;
+* données : `ra_payment.sp_integrity_report` (7 contrôles, cf. docs/02) ;
 * logique  : exécution complète d'une transaction synthétique dans une transaction
   SQL systématiquement annulée (déclencheurs, partie double, chaîne de hachage).
 """
@@ -14,8 +14,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-import asyncpg
-from ra_common.db import Database, sqlstate
+from ra_common.db import Database, DatabaseError, sqlstate
 from ra_common.logging import log_event
 
 from app.core.config import Settings
@@ -156,7 +155,7 @@ class IntegrityService:
                         raise _Rollback
                 except _Rollback:
                     pass
-        except asyncpg.PostgresError as exc:
+        except DatabaseError as exc:
             result = f"SQLSTATE_{sqlstate(exc) or 'UNKNOWN'}"
         latency = round((time.perf_counter() - started) * 1000, 2)
         passed = result == "EXECUTED"

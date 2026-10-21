@@ -6,14 +6,14 @@
 -- des variables d'environnement AUTH_BOOTSTRAP_<USERNAME>_SECRET (cf. .env.example).
 -- Les UUID sont fixes afin de relier les comptes de paiement à leurs propriétaires.
 -- =============================================================================
-\set ON_ERROR_STOP on
-BEGIN;
-SET LOCAL ROLE ra_owner;
+SET NAMES utf8mb4;
+SET time_zone = '+00:00';
+SET sql_mode = 'STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
 
 -- -----------------------------------------------------------------------------
--- auth : rôles RBAC
+-- ra_auth : rôles RBAC
 -- -----------------------------------------------------------------------------
-INSERT INTO auth.roles (code, description, applies_to, is_privileged) VALUES
+INSERT INTO ra_auth.roles (code, description, applies_to, is_privileged) VALUES
     ('payment.customer',     'Initier et consulter ses propres transactions',                       'USER',    false),
     ('payment.operator',     'Consulter l''ensemble des comptes et transactions (lecture seule)',   'USER',    false),
     ('noc.viewer',           'Accès en lecture à la console de supervision et à l''assistant',      'USER',    false),
@@ -26,9 +26,9 @@ INSERT INTO auth.roles (code, description, applies_to, is_privileged) VALUES
     ('svc.resource_server',  'Synchronisation du flux de révocation des jetons',                    'SERVICE', false);
 
 -- -----------------------------------------------------------------------------
--- auth : principaux (inactifs jusqu'à l'amorçage par auth-service)
+-- ra_auth : principaux (inactifs jusqu'à l'amorçage par auth-service)
 -- -----------------------------------------------------------------------------
-INSERT INTO auth.principals (id, kind, username, display_name, secret_hash, is_active) VALUES
+INSERT INTO ra_auth.principals (id, kind, username, display_name, secret_hash, is_active) VALUES
     ('00000000-0000-4000-8000-000000000001', 'USER',    'admin',            'Administrateur plateforme', '!', false),
     ('00000000-0000-4000-8000-000000000002', 'USER',    'alice',            'Alice Démo',                '!', false),
     ('00000000-0000-4000-8000-000000000003', 'USER',    'bob',              'Bob Démo',                  '!', false),
@@ -39,7 +39,7 @@ INSERT INTO auth.principals (id, kind, username, display_name, secret_hash, is_a
     ('00000000-0000-4000-8000-000000000103', 'SERVICE', 'svc-detector',     'Moteur de détection ML/SIEM','!', false),
     ('00000000-0000-4000-8000-000000000104', 'SERVICE', 'svc-payment-api',  'payment-api',               '!', false);
 
-INSERT INTO auth.principal_roles (principal_id, role_code) VALUES
+INSERT INTO ra_auth.principal_roles (principal_id, role_code) VALUES
     ('00000000-0000-4000-8000-000000000001', 'auth.admin'),
     ('00000000-0000-4000-8000-000000000001', 'remediation.admin'),
     ('00000000-0000-4000-8000-000000000001', 'noc.viewer'),
@@ -57,13 +57,13 @@ INSERT INTO auth.principal_roles (principal_id, role_code) VALUES
     ('00000000-0000-4000-8000-000000000104', 'svc.resource_server');
 
 -- -----------------------------------------------------------------------------
--- payment : référentiel, comptes fictifs, configuration dynamique
+-- ra_payment : référentiel, comptes fictifs, configuration dynamique
 -- -----------------------------------------------------------------------------
-INSERT INTO payment.currencies (code, minor_units, label) VALUES
+INSERT INTO ra_payment.currencies (code, minor_units, label) VALUES
     ('EUR', 2, 'Euro (fictif)'),
     ('USD', 2, 'Dollar US (fictif)');
 
-INSERT INTO payment.accounts (id, account_number, owner_principal_id, holder_name, currency, is_synthetic, opening_balance_minor) VALUES
+INSERT INTO ra_payment.accounts (id, account_number, owner_principal_id, holder_name, currency, is_synthetic, opening_balance_minor) VALUES
     ('10000000-0000-4000-8000-000000000001', 'RA-1000-0001', '00000000-0000-4000-8000-000000000002', 'Alice Démo — Courant',   'EUR', false,  500000),
     ('10000000-0000-4000-8000-000000000002', 'RA-1000-0002', '00000000-0000-4000-8000-000000000002', 'Alice Démo — Épargne',   'EUR', false, 1200000),
     ('10000000-0000-4000-8000-000000000003', 'RA-1000-0003', '00000000-0000-4000-8000-000000000003', 'Bob Démo — Courant',     'EUR', false,  250000),
@@ -74,19 +74,19 @@ INSERT INTO payment.accounts (id, account_number, owner_principal_id, holder_nam
     ('90000000-0000-4000-8000-000000000001', 'RA-9000-0001', '00000000-0000-4000-8000-000000000102', 'STM Sonde A',            'EUR', true,  1000000),
     ('90000000-0000-4000-8000-000000000002', 'RA-9000-0002', '00000000-0000-4000-8000-000000000102', 'STM Sonde B',            'EUR', true,  1000000);
 
-INSERT INTO payment.runtime_flags (key, value, reason) VALUES
+INSERT INTO ra_payment.runtime_flags (`key`, value, reason) VALUES
     ('write_mode',                            '"READ_WRITE"', 'bootstrap'),
     ('max_transaction_amount_minor',          '1000000',      'bootstrap'),
     ('max_requests_per_minute_per_principal', '600',          'bootstrap');
 
 -- -----------------------------------------------------------------------------
--- remediation : catalogue de playbooks
+-- ra_remediation : catalogue de playbooks
 -- Gabarits : {{incident.target_service}}, {{incident.target_principal_id}},
 --            {{incident.target_account_id}}, {{incident.id}}
 -- La vérification synthétique est IMPLICITE et OBLIGATOIRE après `steps` ;
 -- `post_verification_steps` ne s'exécutent qu'après une vérification PASSED.
 -- -----------------------------------------------------------------------------
-INSERT INTO remediation.playbooks (code, category, title, description, steps, post_verification_steps, max_attempts, step_timeout_seconds, cooldown_seconds) VALUES
+INSERT INTO ra_remediation.playbooks (code, category, title, description, steps, post_verification_steps, max_attempts, step_timeout_seconds, cooldown_seconds) VALUES
 (
     'PB-SERVICE-RESTART', 'SERVICE_UNAVAILABLE',
     'Redémarrage contrôlé du service',
@@ -94,8 +94,8 @@ INSERT INTO remediation.playbooks (code, category, title, description, steps, po
     '[
         {"action": "docker.restart_container", "target": "{{incident.target_service}}", "params": {"stop_timeout_seconds": 10}},
         {"action": "probe.wait_ready",         "target": "{{incident.target_service}}", "params": {"timeout_seconds": 60, "interval_seconds": 2}}
-     ]'::jsonb,
-    '[]'::jsonb, 3, 90, 30
+     ]',
+    '[]', 3, 90, 30
 ),
 (
     'PB-PERF-RECOVERY', 'PERFORMANCE_DEGRADATION',
@@ -105,10 +105,10 @@ INSERT INTO remediation.playbooks (code, category, title, description, steps, po
         {"action": "payment.set_runtime_flag", "target": "payment-api", "params": {"key": "max_requests_per_minute_per_principal", "value": 60}},
         {"action": "docker.restart_container", "target": "{{incident.target_service}}", "params": {"stop_timeout_seconds": 10}},
         {"action": "probe.wait_ready",         "target": "{{incident.target_service}}", "params": {"timeout_seconds": 60, "interval_seconds": 2}}
-     ]'::jsonb,
+     ]',
     '[
         {"action": "payment.set_runtime_flag", "target": "payment-api", "params": {"key": "max_requests_per_minute_per_principal", "value": 600}}
-     ]'::jsonb, 2, 90, 60
+     ]', 2, 90, 60
 ),
 (
     'PB-RESOURCE-RECOVERY', 'RESOURCE_EXHAUSTION',
@@ -119,10 +119,10 @@ INSERT INTO remediation.playbooks (code, category, title, description, steps, po
         {"action": "payment.purge_stale",      "target": "payment-api", "params": {"older_than_seconds": 120}},
         {"action": "docker.restart_container", "target": "{{incident.target_service}}", "params": {"stop_timeout_seconds": 10}},
         {"action": "probe.wait_ready",         "target": "{{incident.target_service}}", "params": {"timeout_seconds": 60, "interval_seconds": 2}}
-     ]'::jsonb,
+     ]',
     '[
         {"action": "payment.set_write_mode",   "target": "payment-api", "params": {"mode": "READ_WRITE"}}
-     ]'::jsonb, 2, 90, 60
+     ]', 2, 90, 60
 ),
 (
     'PB-INTEGRITY-RESTORE', 'DATA_INTEGRITY_VIOLATION',
@@ -134,10 +134,10 @@ INSERT INTO remediation.playbooks (code, category, title, description, steps, po
         {"action": "payment.purge_stale",        "target": "payment-api", "params": {"older_than_seconds": 120}},
         {"action": "payment.repair_balances",    "target": "payment-api", "params": {"dry_run": false}},
         {"action": "payment.integrity_report",   "target": "payment-api", "params": {"require_pass": true}}
-     ]'::jsonb,
+     ]',
     '[
         {"action": "payment.set_write_mode",     "target": "payment-api", "params": {"mode": "READ_WRITE"}}
-     ]'::jsonb, 2, 120, 60
+     ]', 2, 120, 60
 ),
 (
     'PB-CREDENTIAL-CONTAINMENT', 'CREDENTIAL_COMPROMISE',
@@ -146,8 +146,8 @@ INSERT INTO remediation.playbooks (code, category, title, description, steps, po
     '[
         {"action": "auth.revoke_principal_tokens", "target": "{{incident.target_principal_id}}", "params": {"reason": "CREDENTIAL_COMPROMISE"}},
         {"action": "auth.disable_principal",       "target": "{{incident.target_principal_id}}", "params": {"reason": "CREDENTIAL_COMPROMISE"}}
-     ]'::jsonb,
-    '[]'::jsonb, 2, 30, 0
+     ]',
+    '[]', 2, 30, 0
 ),
 (
     'PB-TRAFFIC-ISOLATION', 'ANOMALOUS_TRAFFIC',
@@ -157,11 +157,11 @@ INSERT INTO remediation.playbooks (code, category, title, description, steps, po
         {"action": "payment.set_write_mode",       "target": "payment-api", "params": {"mode": "SYNTHETIC_ONLY"}},
         {"action": "payment.set_runtime_flag",     "target": "payment-api", "params": {"key": "max_requests_per_minute_per_principal", "value": 30}},
         {"action": "auth.revoke_principal_tokens", "target": "{{incident.target_principal_id}}", "params": {"reason": "ANOMALOUS_TRAFFIC"}, "optional": true}
-     ]'::jsonb,
+     ]',
     '[
         {"action": "payment.set_runtime_flag",     "target": "payment-api", "params": {"key": "max_requests_per_minute_per_principal", "value": 600}},
         {"action": "payment.set_write_mode",       "target": "payment-api", "params": {"mode": "READ_WRITE"}}
-     ]'::jsonb, 2, 30, 60
+     ]', 2, 30, 60
 ),
 (
     'PB-FRAUD-CONTAINMENT', 'FRAUD_PATTERN',
@@ -170,10 +170,9 @@ INSERT INTO remediation.playbooks (code, category, title, description, steps, po
     '[
         {"action": "payment.freeze_account",       "target": "{{incident.target_account_id}}",   "params": {"reason": "FRAUD_PATTERN"}},
         {"action": "auth.revoke_principal_tokens", "target": "{{incident.target_principal_id}}", "params": {"reason": "FRAUD_PATTERN"}, "optional": true}
-     ]'::jsonb,
-    '[]'::jsonb, 2, 30, 0
+     ]',
+    '[]', 2, 30, 0
 );
 
-INSERT INTO remediation.phase_history (phase, reason) VALUES ('NOMINAL', 'platform bootstrap');
+INSERT INTO ra_remediation.phase_history (phase, reason) VALUES ('NOMINAL', 'platform bootstrap');
 
-COMMIT;

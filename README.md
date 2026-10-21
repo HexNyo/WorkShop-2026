@@ -4,7 +4,7 @@ Plateforme de paiement **100 % fictive** en microservices, avec un moteur de rem
 
 | Composant | Rôle | Lot |
 |---|---|---|
-| `database` | PostgreSQL 17 — schémas `auth`, `payment`, `remediation`, invariants financiers en base | 1 (schéma) · 2 (image) |
+| `database` | MariaDB >= 10.6 externe — bases `ra_auth`, `ra_payment`, `ra_remediation`, invariants financiers en base | 1 (schéma) · 2 (image) |
 | `auth-service` | JWT RS256, RBAC, M2M, révocation | 2 |
 | `payment-api` | Transactions ACID idempotentes, santé avancée, administration de remédiation | 3 |
 | `remediation-engine` | Webhook d'alertes, machine à états, playbooks, vérification synthétique, watchdog, flux SSE | 4 |
@@ -22,11 +22,13 @@ Contrats inter-lots : [alert-webhook.schema.json](contracts/alert-webhook.schema
 
 ## Démarrage rapide
 
-Prérequis : Docker (Compose v2) et Bash avec `openssl` (Git Bash sous Windows).
+Prérequis : Docker (Compose v2), Bash avec `openssl` (Git Bash sous Windows) et une instance MariaDB >= 10.6
+joignable depuis l'hôte Docker (`DB_HOST`, `DB_PORT` dans `.env`).
 
 ```bash
 ./scripts/generate-dev-secrets.sh          # crée .env : clé RSA 3072 + secrets aléatoires (jamais versionné)
-docker compose up -d --build --wait        # 6 conteneurs, tous non-root et en lecture seule
+MARIADB_ADMIN_PASSWORD=... docker compose --profile init run --rm db-init   # une seule fois : bases ra_*, comptes, démo
+docker compose up -d --build --wait        # conteneurs non-root et en lecture seule
 ```
 
 Ouvrir **http://localhost:8088** (seul port publié, lié à `127.0.0.1` ; `FRONTEND_PUBLIC_PORT` pour le changer).
@@ -53,7 +55,7 @@ Alternatives : alerte d'un détecteur externe simulé (`docker compose --profile
 
 | Suite | Commande | Contenu |
 |---|---|---|
-| Base de données | `./scripts/test-database.sh` | 43 assertions sur base éphémère : pg_hba, invariants financiers, privilèges, attaque simulée et réparation, garde de clôture d'incident |
+| Base de données | `./scripts/test-database.sh` | 48 assertions sur MariaDB éphémère : authentification, invariants financiers, privilèges, attaque simulée et réparation, garde de clôture d'incident |
 | auth-service — unitaires | `docker build --target test -f services/auth-service/Dockerfile .` | 29 tests (jetons, clés, politiques, Argon2, ra_common) |
 | auth-service — bout en bout | `docker compose --profile test run --rm --build auth-tests` | 15 scénarios : login, verrouillage, rotation et réutilisation du refresh, M2M, confinement, introspection, vérification côté resource server |
 | payment-api — unitaires | `docker build --target test -f services/payment-api/Dockerfile .` | 28 tests (montants, modes d'écriture, visibilité, quotas, tickets et diffusion SSE) |

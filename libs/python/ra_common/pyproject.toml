@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["asyncpg>=0.30,<0.31"]
+mariadb = ["aiomysql>=0.2,<0.3", "PyMySQL>=1.1.1,<2"]
 
 [tool.setuptools.packages.find]
 include = ["ra_common*"]

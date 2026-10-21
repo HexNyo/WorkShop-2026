@@ -6,13 +6,13 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-import asyncpg
+from ra_common.db import Connection, Record, json_value
 
 
 class HealthRepository:
     async def add_sample(
         self,
-        conn: asyncpg.Connection,
+        conn: Connection,
         *,
         service: str,
         status: str,
@@ -22,8 +22,8 @@ class HealthRepository:
     ) -> None:
         await conn.execute(
             """
-            INSERT INTO remediation.service_health_samples (service, status, latency_ms, http_status, details)
-            VALUES ($1, $2::remediation.service_status, $3, $4, $5)
+            INSERT INTO ra_remediation.service_health_samples (service, status, latency_ms, http_status, details)
+            VALUES ($1, $2, $3, $4, $5)
             """,
             service,
             status,
@@ -32,52 +32,53 @@ class HealthRepository:
             details,
         )
 
-    async def since(self, conn: asyncpg.Connection, window: timedelta, limit: int = 5000) -> list[asyncpg.Record]:
+    async def since(self, conn: Connection, window: timedelta, limit: int = 5000) -> list[Record]:
         return await conn.fetch(
             """
-            SELECT service, status::text AS status, latency_ms, observed_at
-              FROM remediation.service_health_samples
-             WHERE observed_at > now() - $1::interval
+            SELECT service, status, latency_ms, observed_at
+              FROM ra_remediation.service_health_samples
+             WHERE observed_at > CURRENT_TIMESTAMP(6) - INTERVAL $1 SECOND
              ORDER BY observed_at
              LIMIT $2
             """,
-            window,
+            int(window.total_seconds()),
             limit,
         )
 
-    async def purge(self, conn: asyncpg.Connection, older_than: timedelta) -> int:
+    async def purge(self, conn: Connection, older_than: timedelta) -> int:
         result = await conn.execute(
-            "DELETE FROM remediation.service_health_samples WHERE observed_at < now() - $1::interval", older_than
+            "DELETE FROM ra_remediation.service_health_samples WHERE observed_at < CURRENT_TIMESTAMP(6) - INTERVAL $1 SECOND",
+            int(older_than.total_seconds()),
         )
         return int(result.split()[-1])
 
 
 class PhaseRepository:
-    async def current(self, conn: asyncpg.Connection) -> asyncpg.Record | None:
+    async def current(self, conn: Connection) -> Record | None:
         return await conn.fetchrow(
-            "SELECT phase::text AS phase, entered_at, incident_id, reason FROM remediation.phase_history "
+            "SELECT phase, entered_at, incident_id, reason FROM ra_remediation.phase_history "
             "ORDER BY entered_at DESC, id DESC LIMIT 1"
         )
 
-    async def add(self, conn: asyncpg.Connection, phase: str, incident_id: UUID | None, reason: str) -> datetime:
+    async def add(self, conn: Connection, phase: str, incident_id: UUID | None, reason: str) -> datetime:
         return await conn.fetchval(
             """
-            INSERT INTO remediation.phase_history (phase, incident_id, reason)
-            VALUES ($1::remediation.system_phase, $2, $3) RETURNING entered_at
+            INSERT INTO ra_remediation.phase_history (phase, incident_id, reason)
+            VALUES ($1, $2, $3) RETURNING entered_at
             """,
             phase,
             incident_id,
             reason[:256],
         )
 
-    async def between(self, conn: asyncpg.Connection, start: datetime, end: datetime) -> list[asyncpg.Record]:
+    async def between(self, conn: Connection, start: datetime, end: datetime) -> list[Record]:
         """Segments chevauchant [start, end] : la phase en vigueur à `start` + les changements suivants."""
         return await conn.fetch(
             """
-            (SELECT phase::text AS phase, entered_at, incident_id FROM remediation.phase_history
+            (SELECT phase, entered_at, incident_id FROM ra_remediation.phase_history
               WHERE entered_at <= $1 ORDER BY entered_at DESC, id DESC LIMIT 1)
             UNION ALL
-            (SELECT phase::text AS phase, entered_at, incident_id FROM remediation.phase_history
+            (SELECT phase, entered_at, incident_id FROM ra_remediation.phase_history
               WHERE entered_at > $1 AND entered_at <= $2 ORDER BY entered_at, id LIMIT 2000)
             ORDER BY entered_at
             """,
@@ -88,24 +89,28 @@ class PhaseRepository:
 
 class PlaybookRepository:
     _COLUMNS = (
-        "code, version, category::text AS category, title, description, steps, post_verification_steps, "
+        "code, version, category, title, description, steps, post_verification_steps, "
         "max_attempts, step_timeout_seconds, cooldown_seconds, enabled, updated_at"
     )
 
-    async def list(self, conn: asyncpg.Connection) -> list[asyncpg.Record]:
-        return await conn.fetch(f"SELECT {self._COLUMNS} FROM remediation.playbooks ORDER BY category, code")
+    @staticmethod
+    def _decode(row: Record | None) -> Record | None:
+        if row is None:
+            return None
+        return {**row, "steps": json_value(row["steps"]), "post_verification_steps": json_value(row["post_verification_steps"])}
 
-    async def get(self, conn: asyncpg.Connection, code: str) -> asyncpg.Record | None:
-        return await conn.fetchrow(f"SELECT {self._COLUMNS} FROM remediation.playbooks WHERE code = $1", code)
+    async def list(self, conn: Connection) -> list[Record]:
+        rows = await conn.fetch(f"SELECT {self._COLUMNS} FROM ra_remediation.playbooks ORDER BY category, code")
+        return [self._decode(row) for row in rows]
 
-    async def active_for(self, conn: asyncpg.Connection, category: str) -> asyncpg.Record | None:
-        return await conn.fetchrow(
-            f"SELECT {self._COLUMNS} FROM remediation.playbooks "
-            "WHERE category = $1::remediation.alert_category AND enabled",
-            category,
+    async def get(self, conn: Connection, code: str) -> Record | None:
+        return self._decode(await conn.fetchrow(f"SELECT {self._COLUMNS} FROM ra_remediation.playbooks WHERE code = $1", code))
+
+    async def active_for(self, conn: Connection, category: str) -> Record | None:
+        return self._decode(
+            await conn.fetchrow(f"SELECT {self._COLUMNS} FROM ra_remediation.playbooks WHERE category = $1 AND enabled", category)
         )
 
-    async def set_enabled(self, conn: asyncpg.Connection, code: str, enabled: bool) -> asyncpg.Record | None:
-        return await conn.fetchrow(
-            f"UPDATE remediation.playbooks SET enabled = $2 WHERE code = $1 RETURNING {self._COLUMNS}", code, enabled
-        )
+    async def set_enabled(self, conn: Connection, code: str, enabled: bool) -> Record | None:
+        await conn.execute("UPDATE ra_remediation.playbooks SET enabled = $2 WHERE code = $1", code, enabled)
+        return await self.get(conn, code)

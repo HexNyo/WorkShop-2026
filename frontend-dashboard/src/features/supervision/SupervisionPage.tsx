@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { useAuth } from "../../auth/AuthProvider";
 import { ErrorBanner, Spinner, StatTile } from "../../components/ui";
-import { formatDuration, formatTime } from "../../lib/format";
+import { formatDuration } from "../../lib/format";
 import { playAlert, useSettings } from "../../lib/settings";
 import { ChaosLabPanel } from "./ChaosLabPanel";
 import { EventFeed } from "./EventFeed";
@@ -28,7 +28,7 @@ export function SupervisionPage() {
     if (phase === "CRITICAL" && lastPhase.current && lastPhase.current !== "CRITICAL") {
       if (settings.audioAlert) playAlert();
       if (settings.browserNotifications && "Notification" in window && Notification.permission === "granted") {
-        new Notification("RESILIENCE-ALPHA — incident critique", { body: state.phaseReason ?? "Phase système critique" });
+        new Notification("Workshop 2026 — incident critique", { body: state.phaseReason ?? "Phase système critique" });
       }
     }
     lastPhase.current = phase;
@@ -43,15 +43,9 @@ export function SupervisionPage() {
     );
   }
 
-  const last = overview.last_verification;
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-lg font-semibold">Centre de supervision NOC/SOC</h1>
-        <p className="text-xs text-muted">
-          Détection → décision → remédiation → vérification synthétique, sans intervention humaine.
-        </p>
-      </div>
+      <h1 className="sr-only">Supervision</h1>
       <ErrorBanner error={state.error} title="Mise à jour partielle" />
 
       <PhaseBanner phase={overview.phase} since={overview.phase_since} reason={state.phaseReason} />
@@ -61,57 +55,62 @@ export function SupervisionPage() {
           label="Incidents ouverts"
           value={overview.counters.open_incidents}
           valueClass={overview.counters.open_incidents > 0 ? "text-red-400" : "text-ink"}
-          hint={overview.active_incident ? `actif : ${overview.active_incident.target_service}` : "aucun incident actif"}
+          hint={overview.active_incident?.target_service}
+          className="border-t-2 border-t-rose-400 from-rose-500/10"
         />
         <StatTile
-          label="Résolus automatiquement (24 h)"
+          label="Résolus auto. (24 h)"
           value={overview.counters.resolved_24h}
           valueClass="text-emerald-400"
-          hint="Zero-Touch, vérification synthétique PASSED"
+          className="border-t-2 border-t-emerald-400 from-emerald-500/10"
         />
         <StatTile
-          label="Escaladés à un humain (24 h)"
+          label="Escaladés (24 h)"
           value={overview.counters.escalated_24h}
           valueClass={overview.counters.escalated_24h > 0 ? "text-amber-400" : "text-ink"}
-          hint="fenêtre glissante 24 h"
+          className="border-t-2 border-t-amber-400 from-amber-500/10"
         />
         <StatTile
-          label="Temps médian de rétablissement (24 h)"
+          className="border-t-2 border-t-violet-400 from-violet-500/10"
+          label="Temps de rétablissement"
           value={formatDuration(overview.counters.mttr_p50_seconds)}
           valueClass={(overview.counters.mttr_p50_seconds ?? 0) > settings.slaSeconds ? "text-amber-400" : "text-emerald-400"}
-          hint={`Objectif SLA < ${settings.slaSeconds} s${
-            last ? ` · dernière vérif. ${last.status === "PASSED" ? "réussie" : "en échec"} à ${formatTime(last.finished_at)}` : ""
-          }`}
+          hint={`objectif < ${settings.slaSeconds} s`}
         />
       </div>
 
-      <PhaseTimeline
-        timeline={state.timeline}
-        range={state.range}
-        onRange={state.setRange}
-        onFocusIncident={state.detail || overview.active_incident ? state.focusIncident : undefined}
-      />
-
       <div className="grid gap-5 xl:grid-cols-3">
-        <div className="space-y-5 xl:col-span-2">
+        <div className="xl:col-span-2">
           <IncidentPanel detail={state.detail} pinned={state.pinned} onUnpin={() => state.select(null)} onChanged={state.reload} />
+        </div>
+        <ServicesPanel
+          services={overview.services}
+          history={state.health}
+          activeIncident={overview.active_incident}
+          onSelectIncident={(id) => state.select(id)}
+        />
+      </div>
+
+      {/* Replié en régime nominal pour ne pas noyer l'opérateur ; s'ouvre seul pendant un incident. */}
+      <details open={Boolean(overview.active_incident) || undefined}>
+        <summary className="cursor-pointer select-none text-sm font-medium text-ink-2 hover:text-ink">Détails techniques</summary>
+        <div className="mt-5 space-y-5">
+          <PhaseTimeline
+            timeline={state.timeline}
+            range={state.range}
+            onRange={state.setRange}
+            onFocusIncident={state.detail || overview.active_incident ? state.focusIncident : undefined}
+          />
           <div className="grid gap-5 lg:grid-cols-2">
             <RemediationLog detail={state.detail} />
             <VerificationChecklist detail={state.detail} />
           </div>
+          <div className="grid gap-5 lg:grid-cols-2">
+            <IncidentHistory incidents={state.incidents} selectedId={state.selectedId} onSelect={(id) => state.select(id)} />
+            <EventFeed events={state.feed} status={state.streamStatus} />
+          </div>
         </div>
-        <div className="space-y-5">
-          <ServicesPanel
-            services={overview.services}
-            history={state.health}
-            activeIncident={overview.active_incident}
-            onSelectIncident={(id) => state.select(id)}
-          />
-          <EventFeed events={state.feed} status={state.streamStatus} />
-        </div>
-      </div>
-
-      <IncidentHistory incidents={state.incidents} selectedId={state.selectedId} onSelect={(id) => state.select(id)} />
+      </details>
 
       {hasRole("chaos.operator") && <ChaosLabPanel />}
     </div>

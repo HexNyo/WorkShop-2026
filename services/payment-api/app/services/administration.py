@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-import asyncpg
-from ra_common.db import Database, sqlstate
+from ra_common.db import Database, DatabaseError, Record, sqlstate
 from ra_common.logging import log_event
 
 from app.domain.errors import InvalidState, LedgerCompromised, ResourceNotFound
@@ -48,13 +47,13 @@ class AdministrationService:
         self._integrity = integrity
 
     # ------------------------------------------------------------------ flags
-    async def list_flags(self) -> list[asyncpg.Record]:
+    async def list_flags(self) -> list[Record]:
         async with self._maint.connection() as conn:
             return await self._flags_repository.list(conn)
 
     async def update_flag(
         self, actor: Caller, key: str, value: Any, *, reason: str, incident_id: UUID | None
-    ) -> tuple[Any, asyncpg.Record]:
+    ) -> tuple[Any, Record]:
         value = validate_flag_value(key, value)
         async with self._maint.transaction() as conn:
             result = await self._flags_repository.update(
@@ -89,7 +88,7 @@ class AdministrationService:
                 rows = await self._maintenance.repair_balances(
                     conn, reason=reason, incident_id=incident_id, dry_run=dry_run
                 )
-        except asyncpg.PostgresError as exc:
+        except DatabaseError as exc:
             if sqlstate(exc) == SQLSTATE_LEDGER_COMPROMISED:
                 log_event(
                     logger,

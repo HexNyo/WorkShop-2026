@@ -101,20 +101,14 @@ export function LoginPage() {
           : error;
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm md:max-w-3xl">
-        <div className="mb-6 flex items-center gap-2">
-          <img src="/favicon.svg" alt="" className="h-8 w-8" />
-          <div>
-            <h1 className="text-lg font-semibold">RESILIENCE-ALPHA</h1>
-            <p className="text-xs text-muted">
-              Plateforme de paiement fictive · reprise autonome
-            </p>
-          </div>
-        </div>
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(ellipse_at_top,rgba(56,189,248,0.18),transparent_55%),radial-gradient(ellipse_at_bottom,rgba(167,139,250,0.15),transparent_55%)] px-4">
+      <div className="w-full max-w-sm">
+        <h1 className="mb-6 bg-gradient-to-r from-sky-400 to-violet-400 bg-clip-text text-center text-2xl font-semibold tracking-tight text-transparent">
+          Workshop 2026
+        </h1>
         <form
           onSubmit={submit}
-          className="grid gap-5 rounded-lg border border-line bg-surface p-5 shadow-sm md:grid-cols-2 md:items-center"
+          className="space-y-5 rounded-xl border border-line bg-surface p-6 shadow-sm"
           noValidate
         >
           <video
@@ -123,7 +117,7 @@ export function LoginPage() {
             playsInline
             muted
             aria-label="Aperçu de la webcam pour la vérification du visage"
-            className="aspect-[4/3] w-full -scale-x-100 rounded-md border border-line bg-surface-2 object-cover"
+            className="mx-auto aspect-square w-32 -scale-x-100 rounded-full border border-line bg-surface-2 object-cover"
           />
           <div className="space-y-4">
             <Field label="Identifiant" htmlFor="username">
@@ -159,12 +153,9 @@ export function LoginPage() {
             >
               Se connecter
             </Button>
-            <p className="text-[0.7rem] text-muted">
-              Toutes les données sont fictives. La session est conservée en
-              mémoire et renouvelée par un cookie sécurisé.
-            </p>
           </div>
         </form>
+        <p className="mt-4 text-center text-[0.7rem] text-muted">Données fictives</p>
       </div>
     </div>
   );

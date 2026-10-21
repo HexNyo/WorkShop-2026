@@ -11,8 +11,9 @@ from ra_common.db import sqlstate
 
 from app.core.config import Settings
 from app.core.db import Database
-from app.domain.errors import InvalidState, PolicyViolation, PrincipalNotFound
-from app.domain.models import ContainmentResult, Principal, RevocationEntry
+from app.core.passwords import SecretHasher
+from app.domain.errors import AccountLocked, InvalidState, PolicyViolation, PrincipalNotFound
+from app.domain.models import ContainmentResult, Principal, PrincipalKind, RevocationEntry
 from app.domain.policies import ROLE_AUTH_ADMIN, check_containment_allowed
 from app.repositories.audit import AuditRepository
 from app.repositories.principals import PrincipalRepository
@@ -30,6 +31,7 @@ class PrincipalService:
         *,
         settings: Settings,
         db: Database,
+        hasher: SecretHasher,
         principals: PrincipalRepository,
         refresh_tokens: RefreshTokenRepository,
         revocations: RevocationRepository,
@@ -37,6 +39,7 @@ class PrincipalService:
     ) -> None:
         self._settings = settings
         self._db = db
+        self._hasher = hasher
         self._principals = principals
         self._refresh = refresh_tokens
         self._revocations = revocations
@@ -200,10 +203,66 @@ class PrincipalService:
             )
             return await self._principals.get_by_id(conn, principal_id)
 
+    # ------------------------------------------------- comptes et mots de passe
+    async def create_user(self, actor: AccessTokenClaims, *, username: str, display_name: str, password: str) -> Principal:
+        secret_hash = await self._hasher.hash(password)
+        async with self._db.transaction() as conn:
+            try:
+                principal_id = await self._principals.create_user(conn, username, display_name, secret_hash)
+            except asyncpg.UniqueViolationError as exc:
+                raise InvalidState("username already taken") from exc
+            await self._audit.record(
+                conn, event_type="PRINCIPAL_CREATED", outcome="SUCCESS", principal_id=principal_id, actor_principal_id=actor.sub
+            )
+            return await self._principals.get_by_id(conn, principal_id)
+
+    async def set_password(
+        self, actor: AccessTokenClaims, principal_id: UUID, new_password: str, *, current_password: str | None = None
+    ) -> None:
+        """Réinitialisation par auth.admin, ou changement par l'intéressé (current_password exigé)."""
+        if current_password is not None:
+            async with self._db.connection() as conn:
+                target = await self._principals.get_by_id(conn, principal_id)
+            if target is None:
+                raise PrincipalNotFound()
+            now = datetime.now(UTC)
+            if target.is_locked(now):
+                raise AccountLocked(int((target.locked_until - now).total_seconds()))
+            if not await self._hasher.verify(target.secret_hash, current_password):
+                # Même compteur que la connexion : un jeton volé ne permet pas de deviner le mot de passe.
+                async with self._db.transaction() as conn:
+                    await self._principals.record_login_failure(
+                        conn, principal_id,
+                        max_failures=self._settings.max_failed_logins, lockout_seconds=self._settings.lockout_seconds,
+                    )
+                raise PolicyViolation("current password is incorrect")
+        secret_hash = await self._hasher.hash(new_password)
+        async with self._db.transaction() as conn:
+            if not await self._principals.lock(conn, principal_id):
+                raise PrincipalNotFound()
+            target = await self._principals.get_by_id(conn, principal_id)
+            if target.kind is not PrincipalKind.USER:
+                raise InvalidState("only human users have a password")
+            await self._principals.rotate_secret(conn, principal_id, secret_hash)
+            # Nouveau mot de passe => toutes les sessions existantes tombent.
+            not_before = await self._principals.bump_tokens_valid_after(conn, principal_id)
+            await self._revocations.revoke_principal(
+                conn, principal_id=principal_id, not_before=not_before,
+                expires_at=not_before + self._revocation_horizon, reason="PASSWORD_CHANGED",
+            )
+            await self._refresh.revoke_all_for_principal(conn, principal_id, "PASSWORD_CHANGED")
+            await self._audit.record(
+                conn,
+                event_type="PASSWORD_CHANGED" if current_password is not None else "PASSWORD_RESET",
+                outcome="SUCCESS",
+                principal_id=principal_id,
+                actor_principal_id=actor.sub,
+            )
+
     async def sessions(self) -> list:
         async with self._db.connection() as conn:
             return await self._refresh.list_active(conn)
 
-    async def audit_log(self, limit: int) -> list:
+    async def audit_log(self, limit: int, **filters: object) -> list:
         async with self._db.connection() as conn:
-            return await self._audit.list_recent(conn, limit)
+            return await self._audit.list_recent(conn, limit, **filters)

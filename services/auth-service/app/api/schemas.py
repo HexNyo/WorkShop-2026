@@ -10,6 +10,7 @@ import base64
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from app.core.config import MIN_SECRET_LENGTH
 from app.domain.models import Principal
 
 REASON_PATTERN = r"^[A-Z][A-Z_]{2,63}$"
@@ -62,6 +63,24 @@ class ContainmentRequest(StrictModel):
 
 class EnableRequest(StrictModel):
     reason: str = Field(pattern=REASON_PATTERN)
+
+
+USERNAME_PATTERN = r"^[a-z0-9][a-z0-9._-]{2,63}$"
+
+
+class CreateUserRequest(StrictModel):
+    username: str = Field(pattern=USERNAME_PATTERN)
+    display_name: str = Field(min_length=1, max_length=128)
+    password: SecretStr = Field(min_length=MIN_SECRET_LENGTH, max_length=256)
+
+
+class PasswordResetRequest(StrictModel):
+    password: SecretStr = Field(min_length=MIN_SECRET_LENGTH, max_length=256)
+
+
+class PasswordChangeRequest(StrictModel):
+    current_password: SecretStr = Field(min_length=1, max_length=256)
+    new_password: SecretStr = Field(min_length=MIN_SECRET_LENGTH, max_length=256)
 
 
 # --- sorties ---------------------------------------------------------------------

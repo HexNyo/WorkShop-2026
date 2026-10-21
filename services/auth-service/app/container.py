@@ -95,6 +95,7 @@ class Container:
             principals=PrincipalService(
                 settings=settings,
                 db=db,
+                hasher=hasher,
                 principals=principals_repo,
                 refresh_tokens=refresh_repo,
                 revocations=revocations_repo,

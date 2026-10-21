@@ -11,7 +11,7 @@ export default defineConfig({
     assetsInlineLimit: 0, // aucun data: URI inline -> CSP stricte sans exception
   },
   server: {
-    proxy: { "/api": { target: "http://localhost:8080", changeOrigin: false } },
+    proxy: { "/api": { target: "http://localhost:8088", changeOrigin: false } },
   },
   test: {
     environment: "jsdom",

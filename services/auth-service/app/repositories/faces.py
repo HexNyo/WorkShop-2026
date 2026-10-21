@@ -11,6 +11,9 @@ class FaceRepository:
     async def get(self, conn: asyncpg.Connection, principal_id: UUID) -> bytes | None:
         return await conn.fetchval("SELECT embedding FROM auth.face_embeddings WHERE principal_id = $1", principal_id)
 
+    async def delete(self, conn: asyncpg.Connection, principal_id: UUID) -> bool:
+        return await conn.execute("DELETE FROM auth.face_embeddings WHERE principal_id = $1", principal_id) == "DELETE 1"
+
     async def upsert(self, conn: asyncpg.Connection, principal_id: UUID, embedding: bytes, enrolled_by: UUID | None) -> None:
         await conn.execute(
             """

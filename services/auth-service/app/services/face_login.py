@@ -176,6 +176,17 @@ class FaceLoginService:
         log_event(logger, logging.INFO, "auth.face_enrolled", "face enrolled", target_principal_id=str(principal_id))
         return enrolled
 
+    async def delete_face(self, actor_sub: str, principal_id: UUID) -> Principal:
+        """Effacement de la donnée biométrique (RGPD art. 17) ; idempotent."""
+        async with self._db.transaction() as conn:
+            if await self._principals.get_by_id(conn, principal_id) is None:
+                raise PrincipalNotFound()
+            if await self._faces.delete(conn, principal_id):
+                await self._audit.record(
+                    conn, event_type="FACE_DELETED", outcome="SUCCESS", principal_id=principal_id, actor_principal_id=actor_sub
+                )
+            return await self._principals.get_by_id(conn, principal_id)
+
     async def enroll_username(self, username: str, image: bytes) -> Principal:
         async with self._db.connection() as conn:
             principal = await self._principals.get_by_username(conn, username.strip().lower())

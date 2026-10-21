@@ -18,6 +18,6 @@ CREATE TABLE IF NOT EXISTS auth.face_embeddings (
 );
 COMMENT ON TABLE auth.face_embeddings IS 'Empreinte biométrique SFace par utilisateur (aucune image stockée)';
 
-GRANT SELECT, INSERT, UPDATE ON auth.face_embeddings TO auth_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON auth.face_embeddings TO auth_app;
 
 COMMIT;

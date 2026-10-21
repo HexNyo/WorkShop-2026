@@ -5,7 +5,7 @@ import { ROLE_GROUPS, useAuth } from "../auth/AuthProvider";
 import { SettingsDialog } from "./SettingsDialog";
 import { Button, cx } from "./ui";
 
-const LINKS = [
+export const LINKS = [
   { to: "/payments", label: "Portail métier", roles: ROLE_GROUPS.payments },
   { to: "/supervision", label: "Supervision NOC/SOC", roles: ROLE_GROUPS.supervision },
   { to: "/assistant", label: "Assistant opérateur", roles: ROLE_GROUPS.assistant },

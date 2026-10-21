@@ -3,7 +3,7 @@
 Pour chaque principal `nom-du-principal`, la variable lue est
 `AUTH_BOOTSTRAP_NOM_DU_PRINCIPAL_SECRET`.
   * secret non initialisé ('!') + variable fournie => secret posé, principal activé ;
-  * secret existant différent de la variable        => rotation (sans réactivation) ;
+  * secret existant différent de la variable        => rotation (sans réactivation), services seulement ;
   * variable absente                                => principal laissé tel quel.
 Un principal désactivé par la remédiation n'est jamais réactivé par l'amorçage.
 """
@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from app.core.config import MIN_SECRET_LENGTH
 from app.core.db import Database
 from app.core.passwords import SecretHasher
+from app.domain.models import PrincipalKind
 from app.repositories.audit import AuditRepository
 from app.repositories.principals import PrincipalRepository
 from ra_common.logging import log_event
@@ -78,7 +79,8 @@ class BootstrapService:
                         await self._audit.record(
                             conn, event_type="BOOTSTRAP_SECRET_SET", outcome="SUCCESS", principal_id=principal.id
                         )
-                elif not await self._hasher.verify(principal.secret_hash, secret):
+                # Un humain gère son mot de passe via l'API : l'amorçage ne le ramène jamais à la valeur du .env.
+                elif principal.kind is PrincipalKind.SERVICE and not await self._hasher.verify(principal.secret_hash, secret):
                     await self._principals.rotate_secret(conn, principal.id, await self._hasher.hash(secret))
                     rotated += 1
                     await self._audit.record(

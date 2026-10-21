@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Response, status
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import JSONResponse
 
 from app.api.deps import get_container
-from app.api.schemas import ContainmentRequest, FaceImage, PrincipalAdminView, PrincipalPage
+from app.api.schemas import (
+    USERNAME_PATTERN,
+    ContainmentRequest,
+    CreateUserRequest,
+    FaceImage,
+    PasswordResetRequest,
+    PrincipalAdminView,
+    PrincipalPage,
+)
 from app.container import Container
 from app.domain.policies import ROLE_AUTH_ADMIN
 from ra_common.security import AccessTokenClaims, require_roles
@@ -39,6 +48,38 @@ async def enroll_face(
     claims: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
 ) -> PrincipalAdminView:
     return PrincipalAdminView.of(await container.face_login.enroll(claims.sub, principal_id, body.image))
+
+
+@router.delete("/principals/{principal_id}/face", response_model=PrincipalAdminView, summary="Effacer le visage enrôlé")
+async def delete_face(
+    principal_id: UUID,
+    container: Container = Depends(get_container),
+    claims: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
+) -> PrincipalAdminView:
+    return PrincipalAdminView.of(await container.face_login.delete_face(claims.sub, principal_id))
+
+
+@router.post("/principals", response_model=PrincipalAdminView, status_code=201, summary="Créer un utilisateur")
+async def create_user(
+    body: CreateUserRequest,
+    container: Container = Depends(get_container),
+    claims: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
+) -> PrincipalAdminView:
+    principal = await container.principals.create_user(
+        claims, username=body.username, display_name=body.display_name, password=body.password.get_secret_value()
+    )
+    return PrincipalAdminView.of(principal)
+
+
+@router.put("/principals/{principal_id}/password", status_code=204, summary="Réinitialiser le mot de passe (révoque les jetons)")
+async def reset_password(
+    principal_id: UUID,
+    body: PasswordResetRequest,
+    container: Container = Depends(get_container),
+    claims: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
+) -> Response:
+    await container.principals.set_password(claims, principal_id, body.password.get_secret_value())
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 ROLE_PATH = Path(pattern=r"^[a-z]+(\.[a-z_]+)+$", max_length=64)
@@ -94,7 +135,12 @@ async def sessions(
 @router.get("/audit", summary="Journal d'audit d'authentification")
 async def audit(
     limit: int = Query(100, ge=1, le=500),
+    username: str | None = Query(None, pattern=USERNAME_PATTERN),
+    event_type: str | None = Query(None, pattern=r"^[A-Z][A-Z_]{1,63}$"),
+    since: datetime | None = None,
+    until: datetime | None = None,
     container: Container = Depends(get_container),
     _: AccessTokenClaims = Depends(require_roles(ROLE_AUTH_ADMIN)),
 ) -> JSONResponse:
-    return JSONResponse({"items": [jsonable_encoder(dict(row)) for row in await container.principals.audit_log(limit)]})
+    rows = await container.principals.audit_log(limit, username=username, event_type=event_type, since=since, until=until)
+    return JSONResponse({"items": [jsonable_encoder(dict(row)) for row in rows]})

@@ -299,3 +299,47 @@ async def test_resource_server_verification_with_jwks_and_revocation_feed(client
         with pytest.raises(TokenError) as excinfo:
             await verifier.verify(token)
         assert excinfo.value.reason == "revoked"
+
+
+def test_admin_user_lifecycle_and_password_changes(client: httpx.Client) -> None:
+    admin = login(client, "admin").json()["access_token"]
+    username = f"e2e-{int(time.time() * 1000)}"
+    initial, changed, reset = "initial-password-1", "changed-password-2", "reset-password-33"
+
+    assert client.post("/v1/admin/principals", json={"username": username, "display_name": "E2E", "password": "short"},
+                       headers=bearer(admin)).status_code == 422
+    created = client.post("/v1/admin/principals", json={"username": username, "display_name": "E2E", "password": initial},
+                          headers=bearer(admin))
+    assert created.status_code == 201, created.text
+    user_id = created.json()["id"]
+    assert created.json()["roles"] == [] and created.json()["face_enrolled"] is False
+    assert client.post("/v1/admin/principals", json={"username": username, "display_name": "E2E", "password": initial},
+                       headers=bearer(admin)).status_code == 409
+
+    # Changement par l'intéressé : mauvais mot de passe actuel refusé, sinon toutes ses sessions tombent.
+    user = login(client, username, initial).json()["access_token"]
+    wrong = client.post("/v1/me/password", json={"current_password": "not-the-password", "new_password": changed},
+                        headers=bearer(user))
+    assert wrong.status_code == 403
+    assert client.post("/v1/me/password", json={"current_password": initial, "new_password": changed},
+                       headers=bearer(user)).status_code == 204
+    time.sleep(1.1)  # tokens_valid_after est arrondi à la seconde suivante
+    assert client.get("/v1/me", headers=bearer(user)).status_code == 401
+    assert login(client, username, initial).status_code == 401
+    assert login(client, username, changed).status_code == 200
+
+    # Réinitialisation par l'admin, réservée à auth.admin.
+    other = login(client, username, changed).json()["access_token"]
+    assert client.put(f"/v1/admin/principals/{user_id}/password", json={"password": reset}, headers=bearer(other)).status_code == 403
+    assert client.put(f"/v1/admin/principals/{user_id}/password", json={"password": reset}, headers=bearer(admin)).status_code == 204
+    assert login(client, username, reset).status_code == 200
+
+    # Effacement du visage : idempotent, même sans enrôlement préalable.
+    deleted = client.delete(f"/v1/admin/principals/{user_id}/face", headers=bearer(admin))
+    assert deleted.status_code == 200 and deleted.json()["face_enrolled"] is False
+
+    audit = client.get("/v1/admin/audit", params={"username": username, "event_type": "PASSWORD_RESET"}, headers=bearer(admin))
+    assert audit.status_code == 200
+    assert [item["event_type"] for item in audit.json()["items"]] == ["PASSWORD_RESET"]
+    created_events = client.get("/v1/admin/audit", params={"username": username}, headers=bearer(admin)).json()["items"]
+    assert {"PRINCIPAL_CREATED", "PASSWORD_CHANGED", "PASSWORD_RESET"} <= {item["event_type"] for item in created_events}

@@ -41,7 +41,11 @@ export const authApi = {
     }),
   logout: () => api<void>(`${AUTH}/auth/logout`, { method: "POST" }),
   me: () => api<Principal & { token_expires_at: string }>(`${AUTH}/me`),
+  changePassword: (current_password: string, new_password: string) =>
+    api<void>(`${AUTH}/me/password`, { method: "POST", body: { current_password, new_password } }),
 };
+
+export const MIN_PASSWORD_LENGTH = 16; // aligné sur MIN_SECRET_LENGTH (auth-service)
 
 // ------------------------------------------------------------------ paiements
 export interface PaymentInput {
@@ -118,6 +122,14 @@ export interface AdminPrincipal {
   is_active: boolean;
   locked_until: string | null;
   last_login_at: string | null;
+  face_enrolled: boolean;
+}
+
+export interface AuditFilters {
+  username?: string;
+  event_type?: string;
+  since?: string;
+  until?: string;
 }
 
 export interface PlaybookInfo {
@@ -142,10 +154,18 @@ export const adminApi = {
     api<{ items: { family_id: string; username: string; last_refresh: string; expires_at: string; client_ip: string | null; user_agent: string | null }[] }>(
       `${AUTH}/admin/sessions`,
     ),
-  authAudit: () =>
-    api<{ items: { occurred_at: string; event_type: string; outcome: string; username: string | null; actor: string | null }[] }>(
-      `${AUTH}/admin/audit?limit=100`,
-    ),
+  createUser: (body: { username: string; display_name: string; password: string }) =>
+    api<AdminPrincipal>(`${AUTH}/admin/principals`, { method: "POST", body }),
+  resetPassword: (id: string, password: string) =>
+    api<void>(`${AUTH}/admin/principals/${id}/password`, { method: "PUT", body: { password } }),
+  deleteFace: (id: string) => api<AdminPrincipal>(`${AUTH}/admin/principals/${id}/face`, { method: "DELETE" }),
+  authAudit: (filters: AuditFilters = {}) => {
+    const query = new URLSearchParams({ limit: "500" });
+    for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
+    return api<{ items: { occurred_at: string; event_type: string; outcome: string; username: string | null; actor: string | null; client_ip: string | null }[] }>(
+      `${AUTH}/admin/audit?${query}`,
+    );
+  },
   playbooks: () => api<PlaybookInfo[]>(`${ADMIN}/playbooks`),
   togglePlaybook: (code: string, enabled: boolean) =>
     api<PlaybookInfo>(`${ADMIN}/playbooks/${encodeURIComponent(code)}`, { method: "PATCH", body: { enabled } }),

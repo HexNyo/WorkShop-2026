@@ -114,6 +114,14 @@ class PrincipalRepository:
         )
         return result.endswith(" 1")
 
+    async def create_user(self, conn: asyncpg.Connection, username: str, display_name: str, secret_hash: str) -> UUID:
+        return await conn.fetchval(
+            "INSERT INTO auth.principals (kind, username, display_name, secret_hash) VALUES ('USER', $1, $2, $3) RETURNING id",
+            username,
+            display_name,
+            secret_hash,
+        )
+
     async def rotate_secret(self, conn: asyncpg.Connection, principal_id: UUID, secret_hash: str) -> None:
         await conn.execute("UPDATE auth.principals SET secret_hash = $2 WHERE id = $1", principal_id, secret_hash)
 

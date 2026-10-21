@@ -265,7 +265,7 @@ services:
       ASSISTANT_UPSTREAM_URL: ${ASSISTANT_UPSTREAM_URL:-http://rag-agent:8000}
       CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
     ports:
-      - "127.0.0.1:${FRONTEND_PUBLIC_PORT:-8088}:8080"
+      - "0.0.0.0:${FRONTEND_PUBLIC_PORT:-8088}:8080"
     tmpfs:
       - /tmp:size=32m,uid=101,gid=101
       - /etc/nginx/conf.d:size=1m,uid=101,gid=101

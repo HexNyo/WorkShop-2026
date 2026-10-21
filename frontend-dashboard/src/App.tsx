@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
 import { ROLE_GROUPS, useAuth } from "./auth/AuthProvider";
+import { EditorialLayout } from "./components/EditorialLayout";
 import { Layout } from "./components/Layout";
 import { Spinner } from "./components/ui";
 import { AdminPage } from "./features/admin/AdminPage";
@@ -26,7 +27,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route element={<Layout />}>
+      <Route element={document.documentElement.classList.contains("editorial") ? <EditorialLayout /> : <Layout />}>
         <Route index element={<Home />} />
         <Route
           path="/payments"

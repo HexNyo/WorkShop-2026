@@ -1,9 +1,9 @@
 /** Console d'administration : RBAC, sessions, chaos, playbooks et audit (chaque onglet porte son rôle). */
 import { useCallback, useEffect, useState } from "react";
 
-import { HUMAN_ROLES, adminApi, type AdminPrincipal, type PlaybookInfo } from "../../api/endpoints";
+import { HUMAN_ROLES, MIN_PASSWORD_LENGTH, adminApi, type AdminPrincipal, type AuditFilters, type PlaybookInfo } from "../../api/endpoints";
 import { useAuth } from "../../auth/AuthProvider";
-import { Badge, Button, Card, Code, EmptyState, ErrorBanner, Field, Select, Spinner, cx } from "../../components/ui";
+import { Badge, Button, Card, Code, EmptyState, ErrorBanner, Field, Input, Select, Spinner, cx } from "../../components/ui";
 import { formatDateTime } from "../../lib/format";
 import { ChaosLabPanel } from "../supervision/ChaosLabPanel";
 
@@ -32,6 +32,8 @@ function UsersTab() {
   const sessions = useLoad(adminApi.sessions, true);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [newUser, setNewUser] = useState({ username: "", display_name: "", password: "" });
+  const [reset, setReset] = useState({ id: "", password: "" });
 
   const act = async (key: string, call: () => Promise<unknown>) => {
     setBusy(key);
@@ -106,6 +108,18 @@ function UsersTab() {
                           </Button>
                         </>
                       )}
+                      {user.face_enrolled && (
+                        <Button
+                          variant="ghost"
+                          busy={busy === `${user.id}:face`}
+                          onClick={() =>
+                            window.confirm(`Effacer définitivement le visage de ${user.username} ? Il ne pourra plus se connecter avant un nouvel enrôlement.`) &&
+                            void act(`${user.id}:face`, () => adminApi.deleteFace(user.id))
+                          }
+                        >
+                          Effacer le visage
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -114,6 +128,66 @@ function UsersTab() {
           </div>
         )}
       </Card>
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Card title="Créer un utilisateur" subtitle="Sans rôle ni visage : attribuez-les ensuite">
+          <form
+            className="grid gap-3 sm:grid-cols-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void act("create", async () => {
+                await adminApi.createUser(newUser);
+                setNewUser({ username: "", display_name: "", password: "" });
+              });
+            }}
+          >
+            <Field label="Identifiant" htmlFor="new-username">
+              <Input id="new-username" required pattern="[a-z0-9][a-z0-9._\-]{2,63}" autoComplete="off" value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} />
+            </Field>
+            <Field label="Nom affiché" htmlFor="new-display-name">
+              <Input id="new-display-name" required maxLength={128} value={newUser.display_name} onChange={(event) => setNewUser({ ...newUser, display_name: event.target.value })} />
+            </Field>
+            <Field label="Mot de passe initial" htmlFor="new-password" hint={`${MIN_PASSWORD_LENGTH} caractères minimum`}>
+              <Input id="new-password" type="password" required minLength={MIN_PASSWORD_LENGTH} maxLength={256} autoComplete="new-password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} />
+            </Field>
+            <div>
+              <Button type="submit" busy={busy === "create"}>
+                Créer
+              </Button>
+            </div>
+          </form>
+        </Card>
+        <Card title="Réinitialiser un mot de passe" subtitle="Ferme toutes les sessions de l'utilisateur">
+          <form
+            className="grid gap-3 sm:grid-cols-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void act("reset", async () => {
+                await adminApi.resetPassword(reset.id, reset.password);
+                setReset({ id: "", password: "" });
+              });
+            }}
+          >
+            <Field label="Utilisateur" htmlFor="reset-user">
+              <Select id="reset-user" required value={reset.id} onChange={(event) => setReset({ ...reset, id: event.target.value })}>
+                <option value="">—</option>
+                {humans.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.username}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Nouveau mot de passe" htmlFor="reset-password" hint={`${MIN_PASSWORD_LENGTH} caractères minimum`}>
+              <Input id="reset-password" type="password" required minLength={MIN_PASSWORD_LENGTH} maxLength={256} autoComplete="new-password" value={reset.password} onChange={(event) => setReset({ ...reset, password: event.target.value })} />
+            </Field>
+            <div>
+              <Button type="submit" variant="danger" busy={busy === "reset"}>
+                Réinitialiser
+              </Button>
+            </div>
+          </form>
+        </Card>
+      </div>
       <Card title="Sessions actives" subtitle="Une ligne par famille de refresh token valide">
         <ErrorBanner error={sessions.error} title="Sessions indisponibles" />
         {sessions.data?.items.length === 0 ? (
@@ -246,9 +320,32 @@ function PlaybooksTab() {
   );
 }
 
+function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
+  const columns = Object.keys(rows[0] ?? {});
+  const cell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const csv = [columns.map(cell), ...rows.map((row) => columns.map((column) => cell(row[column])))].map((line) => line.join(",")).join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
 function AuditTab({ engine, auth }: { engine: boolean; auth: boolean }) {
   const engineAudit = useLoad(adminApi.engineAudit, engine);
-  const authAudit = useLoad(adminApi.authAudit, auth);
+  const [draft, setDraft] = useState<AuditFilters>({});
+  const [filters, setFilters] = useState<AuditFilters>({});
+  const loadAuthAudit = useCallback(
+    () =>
+      adminApi.authAudit({
+        ...filters,
+        // <input type="datetime-local"> est en heure locale : on l'envoie en ISO UTC.
+        since: filters.since && new Date(filters.since).toISOString(),
+        until: filters.until && new Date(filters.until).toISOString(),
+      }),
+    [filters],
+  );
+  const authAudit = useLoad(loadAuthAudit, auth);
   return (
     <div className="grid gap-5 xl:grid-cols-2">
       {engine && (
@@ -270,7 +367,37 @@ function AuditTab({ engine, auth }: { engine: boolean; auth: boolean }) {
         </Card>
       )}
       {auth && (
-        <Card title="Authentification" subtitle="Connexions, rôles, révocations">
+        <Card title="Authentification" subtitle="Connexions, rôles, révocations (500 derniers événements filtrés)">
+          <form
+            className="mb-3 grid gap-2 sm:grid-cols-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setFilters(draft);
+            }}
+          >
+            <Field label="Utilisateur ou acteur" htmlFor="audit-username">
+              <Input id="audit-username" pattern="[a-z0-9][a-z0-9._\-]{2,63}" value={draft.username ?? ""} onChange={(event) => setDraft({ ...draft, username: event.target.value })} />
+            </Field>
+            <Field label="Type d'événement" htmlFor="audit-event" hint="ex. LOGIN_FAILURE">
+              <Input id="audit-event" pattern="[A-Z][A-Z_]{1,63}" value={draft.event_type ?? ""} onChange={(event) => setDraft({ ...draft, event_type: event.target.value })} />
+            </Field>
+            <Field label="Depuis" htmlFor="audit-since">
+              <Input id="audit-since" type="datetime-local" value={draft.since ?? ""} onChange={(event) => setDraft({ ...draft, since: event.target.value })} />
+            </Field>
+            <Field label="Jusqu'à" htmlFor="audit-until">
+              <Input id="audit-until" type="datetime-local" value={draft.until ?? ""} onChange={(event) => setDraft({ ...draft, until: event.target.value })} />
+            </Field>
+            <div className="flex gap-2 sm:col-span-2">
+              <Button type="submit">Filtrer</Button>
+              <Button
+                variant="ghost"
+                disabled={!authAudit.data?.items.length}
+                onClick={() => downloadCsv(`audit-auth-${new Date().toISOString().slice(0, 10)}.csv`, authAudit.data?.items ?? [])}
+              >
+                Exporter en CSV
+              </Button>
+            </div>
+          </form>
           <ErrorBanner error={authAudit.error} title="Audit indisponible" />
           <ol className="max-h-[32rem] space-y-1 overflow-y-auto text-xs">
             {(authAudit.data?.items ?? []).map((item, index) => (

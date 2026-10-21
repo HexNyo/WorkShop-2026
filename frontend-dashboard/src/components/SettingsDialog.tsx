@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
-import { adminApi } from "../api/endpoints";
+import { MIN_PASSWORD_LENGTH, adminApi, authApi } from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
 import { updateSettings, useSettings } from "../lib/settings";
-import { Code, Drawer, ErrorBanner, Field, Input, Select, Spinner } from "./ui";
+import { Button, Code, Drawer, ErrorBanner, Field, Input, Select, Spinner } from "./ui";
 
 const ENGINE_LABELS: Record<string, string> = {
   health_poll_seconds: "Intervalle des sondes (s)",
@@ -21,6 +21,53 @@ function Toggle({ id, label, checked, onChange, disabled }: { id: string; label:
       <span className={disabled ? "text-muted" : "text-ink"}>{label}</span>
       <input id={id} type="checkbox" className="h-4 w-4 accent-[rgb(var(--accent))]" checked={checked} disabled={disabled} onChange={(event) => onChange?.(event.target.checked)} />
     </label>
+  );
+}
+
+function PasswordSection() {
+  const { logout } = useAuth();
+  const [form, setForm] = useState({ current: "", next: "", confirm: "" });
+  const [error, setError] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
+  const mismatch = form.confirm !== "" && form.confirm !== form.next;
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await authApi.changePassword(form.current, form.next);
+      await logout(); // le serveur a fermé toutes les sessions, celle-ci comprise
+    } catch (failure) {
+      setError(failure);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Mot de passe</h3>
+      <form
+        className="space-y-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!mismatch) void submit();
+        }}
+      >
+        <Field label="Mot de passe actuel" htmlFor="pwd-current">
+          <Input id="pwd-current" type="password" required autoComplete="current-password" value={form.current} onChange={(event) => setForm({ ...form, current: event.target.value })} />
+        </Field>
+        <Field label="Nouveau mot de passe" htmlFor="pwd-next" hint={`${MIN_PASSWORD_LENGTH} caractères minimum`}>
+          <Input id="pwd-next" type="password" required minLength={MIN_PASSWORD_LENGTH} maxLength={256} autoComplete="new-password" value={form.next} onChange={(event) => setForm({ ...form, next: event.target.value })} />
+        </Field>
+        <Field label="Confirmation" htmlFor="pwd-confirm" hint={mismatch ? "Les deux mots de passe diffèrent" : "Vous serez déconnecté de toutes vos sessions"}>
+          <Input id="pwd-confirm" type="password" required aria-invalid={mismatch} autoComplete="new-password" value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} />
+        </Field>
+        <ErrorBanner error={error} title="Changement refusé" />
+        <Button type="submit" busy={busy} disabled={mismatch}>
+          Changer le mot de passe
+        </Button>
+      </form>
+    </section>
   );
 }
 
@@ -62,6 +109,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           <Toggle id="audio" label="Alerte sonore en phase critique" checked={settings.audioAlert} onChange={(value) => updateSettings({ audioAlert: value })} />
           <Toggle id="notify" label="Notification navigateur en phase critique" checked={settings.browserNotifications} onChange={(value) => void askNotifications(value)} />
         </section>
+
+        <PasswordSection />
 
         <section className="space-y-1">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Intégrations sortantes</h3>

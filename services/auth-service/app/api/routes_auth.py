@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
@@ -13,6 +14,7 @@ from app.api.schemas import (
     FaceLoginRequest,
     LoginRequest,
     MeResponse,
+    PasswordChangeRequest,
     PasswordStepRequest,
     PreAuthResponse,
     PrincipalView,
@@ -103,3 +105,18 @@ async def me(
         **PrincipalView.of(principal).model_dump(),
         token_expires_at=datetime.fromtimestamp(claims.exp, UTC),
     )
+
+
+@router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT, summary="Changer son mot de passe (ferme toutes les sessions)")
+async def change_password(
+    body: PasswordChangeRequest,
+    container: Container = Depends(get_container),
+    claims: AccessTokenClaims = Depends(authenticate),
+) -> Response:
+    await container.principals.set_password(
+        claims, UUID(claims.sub), body.new_password.get_secret_value(),
+        current_password=body.current_password.get_secret_value(),
+    )
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    clear_refresh_cookie(response, container.settings)
+    return response

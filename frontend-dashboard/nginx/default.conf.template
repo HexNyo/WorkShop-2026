@@ -18,8 +18,19 @@ log_format ra_json escape=json
 limit_req_zone $binary_remote_addr zone=ra_login:10m rate=30r/m;
 limit_req_zone $binary_remote_addr zone=ra_assistant:10m rate=20r/m;
 
+# Port http publié : renvoie vers https (8080 reste en http pour le réseau interne et les tests de passerelle).
+server {
+    listen 8081;
+    server_tokens off;
+    return 301 https://$host:${FRONTEND_HTTPS_PORT}$request_uri;
+}
+
 server {
     listen 8080;
+    listen 8443 ssl;
+    ssl_certificate /etc/nginx/tls/cert.pem;
+    ssl_certificate_key /etc/nginx/tls/key.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
     server_name _;
     server_tokens off;
     access_log /dev/stdout ra_json;

@@ -31,11 +31,16 @@ ENV NGINX_ENTRYPOINT_QUIET_LOGS=1 \
     PAYMENT_UPSTREAM=payment-api:8000 \
     SUPERVISION_UPSTREAM=remediation-engine:8002 \
     ASSISTANT_UPSTREAM_URL=http://rag-agent:8000 \
-    CHAOS_LAB_ENABLED=false
+    CHAOS_LAB_ENABLED=false \
+    FRONTEND_HTTPS_PORT=8443
+USER root
+RUN apk add --no-cache openssl && install -d -o 101 -g 101 /etc/nginx/tls
+USER 101
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/snippets/ /etc/nginx/snippets/
+COPY --chmod=0755 nginx/15-tls-cert.sh /docker-entrypoint.d/15-tls-cert.sh
 COPY --chmod=0755 nginx/40-lab-routes.sh /docker-entrypoint.d/40-lab-routes.sh
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 8080
+EXPOSE 8080 8081 8443
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1

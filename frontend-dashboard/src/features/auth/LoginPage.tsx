@@ -19,8 +19,13 @@ export function LoginPage() {
   useEffect(() => {
     let stream: MediaStream | null = null;
     let cancelled = false;
+    // Sans https (ou localhost), le navigateur ne fournit pas la caméra du tout.
+    if (!navigator.mediaDevices) {
+      setError(new Error("Caméra bloquée : ouvrez la page en https ou sur localhost."));
+      return;
+    }
     navigator.mediaDevices
-      ?.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } })
+      .getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } })
       .then((media) => {
         if (cancelled)
           return media.getTracks().forEach((track) => track.stop());
@@ -28,13 +33,14 @@ export function LoginPage() {
         if (video.current) video.current.srcObject = media;
         setCameraReady(true);
       })
-      .catch(() =>
-        setError(
-          new Error(
-            "Caméra indisponible : autorisez l'accès à la webcam pour vous connecter.",
-          ),
-        ),
-      );
+      .catch((failure: DOMException) => {
+        const reasons: Record<string, string> = {
+          NotAllowedError: "accès refusé, autorisez la caméra dans le cadenas de la barre d'adresse.",
+          NotFoundError: "aucune webcam détectée sur cet appareil.",
+          NotReadableError: "la webcam est déjà utilisée par une autre application (Teams, OBS…).",
+        };
+        setError(new Error(`Caméra indisponible : ${reasons[failure.name] ?? failure.message}`));
+      });
     return () => {
       cancelled = true;
       stream?.getTracks().forEach((track) => track.stop());

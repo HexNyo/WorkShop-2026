@@ -255,8 +255,13 @@ services:
       SUPERVISION_UPSTREAM: remediation-engine:8002
       ASSISTANT_UPSTREAM_URL: ${ASSISTANT_UPSTREAM_URL:-http://rag-agent:8000}
       CHAOS_LAB_ENABLED: ${CHAOS_LAB_ENABLED:-false}
+      FRONTEND_HTTPS_PORT: ${FRONTEND_HTTPS_PORT:-8443}
+      TLS_SAN: ${TLS_SAN:-DNS:localhost,DNS:workshop.localhost,IP:127.0.0.1}
     ports:
-      - "0.0.0.0:${FRONTEND_PUBLIC_PORT:-8088}:8080"
+      - "0.0.0.0:${FRONTEND_PUBLIC_PORT:-8088}:8081"
+      - "0.0.0.0:${FRONTEND_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - frontend-tls:/etc/nginx/tls
     tmpfs:
       - /tmp:size=32m,uid=101,gid=101
       - /etc/nginx/conf.d:size=1m,uid=101,gid=101
@@ -492,3 +497,4 @@ networks:
 
 volumes:
   ollama-models:
+  frontend-tls:
